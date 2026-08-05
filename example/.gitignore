@@ -1,0 +1,5 @@
+node_modules
+dist
+.env.local
+.convex
+.DS_Store

@@ -1,0 +1,9 @@
+node_modules
+dist
+*.tsbuildinfo
+.env
+.env.local
+.convex
+example/.env.local
+.claude/settings.local.json
+.DS_Store

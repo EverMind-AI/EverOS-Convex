@@ -1,0 +1,84 @@
+{
+  "name": "@everos/convex",
+  "description": "Long-term memory for Convex apps, backed by EverOS Cloud. Drop-in remember/recall plus one-line memory for @convex-dev/agent.",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "keywords": [
+    "convex",
+    "convex-component",
+    "memory",
+    "agent",
+    "ai",
+    "everos",
+    "evermind",
+    "llm"
+  ],
+  "homepage": "https://github.com/EverMind-AI/everos-convex#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EverMind-AI/everos-convex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/EverMind-AI/everos-convex/issues"
+  },
+  "author": "EverMind (https://evermind.ai)",
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev --live-component-sources --typecheck-components",
+    "setup": "npm i && npm run build",
+    "dev:example": "cd example && npm run dev",
+    "build:watch": "chokidar 'tsconfig*.json' 'src/**/*.ts' -i '**/*.test.ts' -c 'npm run build' --initial",
+    "build": "tsc --project ./tsconfig.build.json && cp src/component/_generated/*.d.ts dist/component/_generated/ && echo '{\"type\": \"module\"}' > dist/package.json",
+    "build:codegen": "convex codegen --component-dir ./src/component && npm run build",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:debug": "vitest --inspect-brk --no-file-parallelism",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/tsconfig.json"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./convex.config": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./test": "./src/test.ts"
+  },
+  "types": "./dist/client/index.d.ts",
+  "module": "./dist/client/index.js",
+  "dependencies": {
+    "convex-helpers": "^0.1.104"
+  },
+  "peerDependencies": {
+    "@convex-dev/agent": "^0.6.0",
+    "convex": "^1.36.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@convex-dev/agent": "^0.6.4",
+    "@edge-runtime/vm": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "chokidar-cli": "^3.0.0",
+    "convex": "^1.36.1",
+    "convex-test": "^0.0.38",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
+    "zod": "^3.24.0"
+  }
+}

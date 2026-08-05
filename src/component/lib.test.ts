@@ -1,0 +1,644 @@
+/// <reference types="vite/client" />
+import { convexTest } from "convex-test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
+import schema from "./schema.js";
+
+const modules = import.meta.glob("./**/*.ts");
+
+const CREDS = { apiKey: "test-key", baseUrl: "https://api.evermind.test" };
+
+/** Route a mocked EverOS request by path. */
+function mockEveros(
+  handlers: Partial<Record<string, (body: any) => unknown>>,
+) {
+  const fetchMock = vi.fn(
+    async (url: string | URL | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      const path = new URL(u).pathname;
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      const handler = handlers[path];
+      if (!handler) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(JSON.stringify(handler(body)), { status: 200 });
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** A minimal v2 search response; all result arrays empty unless overridden. */
+function searchResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      episodes: [],
+      profiles: [],
+      agent_cases: [],
+      agent_skills: [],
+      unprocessed_messages: [],
+      ...overrides,
+    },
+  };
+}
+
+beforeEach(() => {
+  vi.unstubAllGlobals();
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("remember + flush", () => {
+  test("enqueues, flushes to the v2 ingest API, and retires the row once extracted", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const fetchMock = mockEveros({
+      "/api/v2/memory/add": (body) => {
+        // v2 has no top-level user_id or async_mode — identity rides on each
+        // message's sender_id, and a session_id is always required.
+        expect(body.user_id).toBeUndefined();
+        expect(body.async_mode).toBeUndefined();
+        expect(body.session_id).toBe("user:u1");
+        expect(body.messages[0].content).toBe("I love espresso");
+        expect(body.messages[0].sender_id).toBe("u1");
+        return { data: { status: "queued", message_count: 1 } };
+      },
+      "/api/v2/memory/flush": (body) => {
+        expect(body.session_id).toBe("user:u1");
+        return { data: { status: "extracted" } };
+      },
+    });
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "I love espresso",
+      ...CREDS,
+    });
+    expect(pendingId).toBeDefined();
+
+    // The remember mutation scheduled a flush; run it (and anything it schedules).
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // One ingest POST + one eager-extraction flush POST.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The flush reported "extracted", so the row left the read-your-writes set.
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    expect(row?.status).toBe("extracted");
+
+    // Usage was logged.
+    const usage = await t.run(async (ctx) =>
+      ctx.db
+        .query("usage")
+        .withIndex("by_user", (q) => q.eq("userId", "u1"))
+        .collect(),
+    );
+    expect(usage.some((u) => u.op === "remember")).toBe(true);
+  });
+
+  test("retries flush while the ingest hasn't landed (no_extraction)", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    let flushCalls = 0;
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+      "/api/v2/memory/flush": () => {
+        flushCalls++;
+        // First flush hits the ingest landing window (a silent no-op);
+        // the retry succeeds.
+        return {
+          data: { status: flushCalls === 1 ? "no_extraction" : "extracted" },
+        };
+      },
+    });
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "landed late",
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(flushCalls).toBe(2);
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    expect(row?.status).toBe("extracted");
+  });
+
+  test("rejects empty content with a clear error", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(api.lib.remember, { userId: "u1", content: "   ", ...CREDS }),
+    ).rejects.toThrow(/empty content/);
+  });
+
+  test("retries on failure and eventually marks failed", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    // Force fetch to return a server error.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("server error", { status: 500 })),
+    );
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "will fail",
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    // One attempt made; still queued for retry (attempts < MAX_ATTEMPTS).
+    expect(row?.attempts).toBe(1);
+    expect(row?.status).toBe("queued");
+    expect(row?.lastError).toContain("500");
+  });
+});
+
+describe("recall", () => {
+  test("searches EverOS and hydrates the local index", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/search": (body) => {
+        expect(body.query).toBe("what coffee do I like");
+        // v2 scopes by top-level user_id (no filters object).
+        expect(body.user_id).toBe("u1");
+        expect(body.include_profile).toBe(true);
+        return searchResponse({
+          episodes: [
+            {
+              id: "ep-1",
+              user_id: "u1",
+              session_id: "s1",
+              // Live API returns null (not absent) for optional strings,
+              // null score, ISO-string timestamp, type "Conversation" —
+              // recall must normalize all of these.
+              summary: null,
+              episode: "User loves espresso",
+              type: "Conversation",
+              timestamp: "2026-07-08T19:13:21",
+              score: null,
+              atomic_facts: [
+                {
+                  id: "af-1",
+                  // v2 renamed the fact text field to `content`.
+                  content: "u1 drinks espresso every morning",
+                  score: 0.79,
+                  timestamp: "2026-07-08T19:13:21",
+                  session_id: null, // null must become undefined, not throw
+                },
+                { id: "af-2", content: "" }, // empty facts should be filtered out
+              ],
+            },
+          ],
+        });
+      },
+    });
+
+    const results = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "what coffee do I like",
+      topK: 5,
+      ...CREDS,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].everosMemoryId).toBe("ep-1");
+    expect(results[0].text).toBe("User loves espresso");
+    expect(results[0].kind).toBe("episodic");
+    expect(results[0].score).toBeUndefined();
+    expect(results[0].timestamp).toBe(Date.parse("2026-07-08T19:13:21Z"));
+    expect(results[0].summary).toBeUndefined(); // null coerced to undefined
+    expect(results[0].sessionId).toBe("s1");
+    // Atomic facts surfaced for traceability; empty ones filtered out.
+    expect(results[0].atomicFacts).toHaveLength(1);
+    expect(results[0].atomicFacts![0].text).toBe(
+      "u1 drinks espresso every morning",
+    );
+    expect(results[0].atomicFacts![0].score).toBeCloseTo(0.79);
+    expect(results[0].atomicFacts![0].sessionId).toBeUndefined();
+
+    // Local index hydrated.
+    const mem = await t.run(async (ctx) =>
+      ctx.db
+        .query("memories")
+        .withIndex("by_user", (q) => q.eq("userId", "u1"))
+        .collect(),
+    );
+    expect(mem).toHaveLength(1);
+    expect(mem[0].everosMemoryId).toBe("ep-1");
+    expect(mem[0].preview).toContain("espresso");
+    expect(mem[0].sessionId).toBe("s1");
+  });
+
+  test("renders profile items as readable text, not serialized records", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/search": () =>
+        searchResponse({
+          profiles: [
+            {
+              id: "prof-1",
+              user_id: "u1",
+              profile_data: {
+                summary: "Alex is on the Pro plan.",
+                explicit_info: [
+                  {
+                    category: "subscription",
+                    description: "Alex is on the Pro plan, billed annually.",
+                    evidence: "Alex said 'I'm on the Pro plan'.",
+                    item_id: "ei_6a73a1731d3a82c08a7ae316",
+                    source: "llm",
+                    created_at: "2026-08-05T20:47:47.123560+00:00",
+                  },
+                ],
+                implicit_traits: [
+                  {
+                    trait: "routine-oriented",
+                    description: "Alex follows a consistent weekly schedule.",
+                    item_id: "it_6a73a1731d3a82c08a7ae317",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+    });
+
+    const results = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "who is this customer",
+      ...CREDS,
+    });
+    const profile = results.find((r) => r.kind === "profile")!;
+    expect(profile.text).toBe(
+      "Alex is on the Pro plan, billed annually.; " +
+        "Alex follows a consistent weekly schedule.",
+    );
+    // Provenance must not leak into text that reaches a prompt or a UI.
+    expect(profile.text).not.toContain("item_id");
+    expect(profile.text).not.toContain("created_at");
+    expect(profile.text).not.toContain("{");
+  });
+
+  test("merges not-yet-extracted content as pending (read-your-writes)", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({ "/api/v2/memory/search": () => searchResponse() });
+    // Content ingested but not yet extracted server-side.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "I just switched to oat milk",
+        role: "user",
+        status: "sent",
+        attempts: 0,
+      });
+      // Another user's queue must not leak in.
+      await ctx.db.insert("pending", {
+        userId: "u2",
+        content: "not mine",
+        role: "user",
+        status: "sent",
+        attempts: 0,
+      });
+      // Extracted rows are covered by real memories — excluded.
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "old news",
+        role: "user",
+        status: "extracted",
+        attempts: 0,
+      });
+    });
+
+    const results = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "milk",
+      ...CREDS,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].text).toBe("I just switched to oat milk");
+    expect(results[0].pending).toBe(true);
+    expect(results[0].everosMemoryId).toMatch(/^pending:/);
+
+    // Opt out returns only extracted memories.
+    const strict = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "milk",
+      includeRecent: false,
+      ...CREDS,
+    });
+    expect(strict).toHaveLength(0);
+  });
+
+  test("stops merging stalled rows after the max age", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    mockEveros({ "/api/v2/memory/search": () => searchResponse() });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "stuck in sent forever",
+        role: "user",
+        status: "sent",
+        attempts: 0,
+      });
+    });
+
+    const fresh = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "anything",
+      ...CREDS,
+    });
+    expect(fresh).toHaveLength(1);
+
+    // 20 minutes later the row counts as a stalled pipeline, not recent
+    // content — its text was almost certainly extracted server-side.
+    vi.advanceTimersByTime(20 * 60_000);
+    const later = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "anything",
+      ...CREDS,
+    });
+    expect(later).toHaveLength(0);
+  });
+});
+
+describe("getProfile", () => {
+  test("fetches profile memory", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/get": (body) => {
+        expect(body.memory_type).toBe("profile");
+        expect(body.user_id).toBe("u1");
+        return {
+          data: {
+            profiles: [
+              {
+                id: "prof-1",
+                user_id: "u1",
+                scenario: "personal",
+                profile_data: {
+                  summary: "Alex, prefers concise answers",
+                  explicit_info: ["name: Alex"],
+                  implicit_traits: ["prefers concise answers"],
+                },
+              },
+            ],
+            total_count: 1,
+            count: 1,
+          },
+        };
+      },
+    });
+
+    const profiles = await t.action(api.lib.getProfile, {
+      userId: "u1",
+      ...CREDS,
+    });
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].scenario).toBe("personal");
+    expect(profiles[0].summary).toBe("Alex, prefers concise answers");
+    expect(profiles[0].implicitTraits).toContain("prefers concise answers");
+  });
+
+  test("returns [] when the user has no profile yet", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/get": () => ({
+        data: { profiles: [], total_count: 0, count: 0 },
+      }),
+    });
+    const profiles = await t.action(api.lib.getProfile, {
+      userId: "u1",
+      ...CREDS,
+    });
+    expect(profiles).toEqual([]);
+  });
+});
+
+describe("forgetSession", () => {
+  test("deletes the session remotely and clears matching local rows", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("memories", {
+        userId: "u1",
+        everosMemoryId: "ep-1",
+        kind: "episodic",
+        preview: "something",
+        sessionId: "s1",
+        syncedAt: Date.now(),
+      });
+      // A different session's row must survive.
+      await ctx.db.insert("memories", {
+        userId: "u1",
+        everosMemoryId: "ep-2",
+        kind: "episodic",
+        preview: "other session",
+        sessionId: "s2",
+        syncedAt: Date.now(),
+      });
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "queued in s1",
+        role: "user",
+        sessionId: "s1",
+        status: "sent",
+        attempts: 0,
+      });
+    });
+    mockEveros({
+      "/api/v2/memory/delete": (body) => {
+        // v2 deletes by scope; a single memory_id is not accepted.
+        expect(body.session_id).toBe("s1");
+        return { data: { filters: ["session_id"], count: 3 } };
+      },
+    });
+
+    const res = await t.action(api.lib.forgetSession, {
+      userId: "u1",
+      sessionId: "s1",
+      ...CREDS,
+    });
+    expect(res.deletedCount).toBe(3);
+
+    const remaining = await t.run(async (ctx) =>
+      ctx.db.query("memories").collect(),
+    );
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].everosMemoryId).toBe("ep-2");
+    const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(pending).toHaveLength(0);
+  });
+});
+
+describe("listMemories", () => {
+  test("paginates the local index for a user", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i++) {
+        await ctx.db.insert("memories", {
+          userId: "u1",
+          everosMemoryId: `ep-${i}`,
+          kind: "episodic",
+          preview: `memory ${i}`,
+          syncedAt: Date.now() + i,
+        });
+      }
+      await ctx.db.insert("memories", {
+        userId: "u2",
+        everosMemoryId: "other",
+        kind: "episodic",
+        preview: "not mine",
+        syncedAt: Date.now(),
+      });
+    });
+
+    const page = await t.query(api.lib.listMemories, {
+      userId: "u1",
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page).toHaveLength(3);
+    expect(page.page.every((m) => m.userId === "u1")).toBe(true);
+  });
+});
+
+describe("flush batching", () => {
+  test("groups queued items by (user, session) — one ingest call per session", async () => {
+    const t = convexTest(schema, modules);
+    const ingest = vi.fn();
+    mockEveros({
+      "/api/v2/memory/add": (body) => {
+        ingest(body);
+        return {
+          data: { status: "queued", message_count: body.messages.length },
+        };
+      },
+    });
+    // Seed the queue directly so batching is tested independent of scheduler timing.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "fact one",
+        role: "user",
+        sessionId: "s1",
+        status: "queued",
+        attempts: 0,
+      });
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "fact two",
+        role: "user",
+        sessionId: "s1",
+        status: "queued",
+        attempts: 0,
+      });
+      // Different session → must be a separate ingest call.
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "other",
+        role: "user",
+        sessionId: "s2",
+        status: "queued",
+        attempts: 0,
+      });
+      // No session → the per-user default session.
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "sessionless",
+        role: "user",
+        status: "queued",
+        attempts: 0,
+      });
+    });
+
+    // eager: false so no extraction flushes are scheduled — isolate ingest.
+    await t.action(internal.lib.flush, { eager: false, ...CREDS });
+
+    // s1 (2 messages) + s2 (1) + user:u1 (1) = three ingest calls.
+    expect(ingest).toHaveBeenCalledTimes(3);
+    const s1 = ingest.mock.calls.find((c) => c[0].session_id === "s1");
+    expect(s1![0].messages).toHaveLength(2);
+    const sessionless = ingest.mock.calls.find(
+      (c) => c[0].session_id === "user:u1",
+    );
+    expect(sessionless![0].messages).toHaveLength(1);
+    const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(rows.every((r) => r.status === "sent")).toBe(true);
+  });
+});
+
+describe("flush give-up", () => {
+  test("marks a row failed after MAX_ATTEMPTS (5)", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("err", { status: 500 })),
+    );
+    // A row that has already failed 4 times — the next failure is the 5th.
+    const id = await t.run(async (ctx) =>
+      ctx.db.insert("pending", {
+        userId: "u1",
+        content: "x",
+        role: "user",
+        status: "queued",
+        attempts: 4,
+      }),
+    );
+
+    await t.action(internal.lib.flush, { ...CREDS });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id as Id<"pending">));
+    expect(row?.attempts).toBe(5);
+    expect(row?.status).toBe("failed");
+  });
+});
+
+describe("forgetUser", () => {
+  test("batch-deletes remotely and clears all of the user's local rows", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("memories", {
+        userId: "u1",
+        everosMemoryId: "e1",
+        kind: "episodic",
+        preview: "p",
+        syncedAt: Date.now(),
+      });
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "c",
+        role: "user",
+        status: "sent",
+        attempts: 0,
+      });
+      await ctx.db.insert("usage", { userId: "u1", op: "recall", ts: Date.now() });
+      // A different user's row must be left untouched.
+      await ctx.db.insert("memories", {
+        userId: "u2",
+        everosMemoryId: "e2",
+        kind: "episodic",
+        preview: "other",
+        syncedAt: Date.now(),
+      });
+    });
+    mockEveros({
+      "/api/v2/memory/delete": (body) => {
+        expect(body.user_id).toBe("u1");
+        return { data: { filters: ["user_id"], count: 5 } };
+      },
+    });
+
+    const res = await t.action(api.lib.forgetUser, { userId: "u1", ...CREDS });
+    expect(res.deletedCount).toBe(5);
+
+    const mem = await t.run(async (ctx) => ctx.db.query("memories").collect());
+    expect(mem).toHaveLength(1);
+    expect(mem[0].userId).toBe("u2");
+    const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(pending).toHaveLength(0);
+  });
+});

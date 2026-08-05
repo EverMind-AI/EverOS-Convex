@@ -244,13 +244,13 @@ index is hydrated from retrieval results, not at ingest time.
 
 ## Local development
 
-The [`example/`](./example) app links this package with `file:..`. That means
-two copies of `convex` resolve during local dev, which makes the example's
-`convex.config.ts` fail a strict type-check with a spurious `env` type
-mismatch. It's a link-only artifact — apps that install `@everos/convex` from
-npm have a single `convex` and are unaffected — so the example's dev script
-runs `convex dev --typecheck=disable`. The component package itself
-type-checks and tests cleanly (`npm run build`, `npm test`).
+The [`example/`](./example) app links this package with `file:..`, so two
+copies of `convex` resolve during local dev and the two `ComponentDefinition`
+types end up structurally identical but nominally distinct. The example's
+`convex.config.ts` casts around it with a comment. It is a link-only artifact:
+apps that install `@everos/convex` from npm resolve a single `convex` and need
+no cast. Everything else type-checks strictly, in the example and in the
+component package (`npm run build`, `npm test`).
 
 ---
 

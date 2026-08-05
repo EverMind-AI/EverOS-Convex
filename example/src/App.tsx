@@ -118,6 +118,7 @@ function ConversationPanel({ conversation }: { conversation: Conversation }) {
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [escalating, setEscalating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const sendMessage = useAction(api.chat.sendMessage);
   const escalate = useAction(api.chat.escalate);
 
@@ -131,12 +132,19 @@ function ConversationPanel({ conversation }: { conversation: Conversation }) {
     if (!prompt || pending) return;
     setInput("");
     setPending(true);
+    setError(null);
     try {
       await sendMessage({
         conversationId: conversation._id,
         customerId: CUSTOMER_ID,
         prompt,
       });
+    } catch (err) {
+      // Surface the server message (e.g. the shared-demo message budget)
+      // instead of failing silently.
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg.replace(/^\[.*?\]\s*/, "").split("\n")[0]);
+      setInput(prompt);
     } finally {
       setPending(false);
     }
@@ -201,6 +209,8 @@ function ConversationPanel({ conversation }: { conversation: Conversation }) {
           </div>
         )}
       </div>
+
+      {error && <div className="composer-error">{error}</div>}
 
       <form className="composer" onSubmit={onSend}>
         <input

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm-run-all --parallel dev:frontend dev:backend",
     "dev:frontend": "vite",
-    "dev:backend": "convex dev --typecheck=disable",
+    "dev:backend": "convex dev",
     "build": "tsc -b && vite build",
     "test": "vitest run --passWithNoTests"
   },

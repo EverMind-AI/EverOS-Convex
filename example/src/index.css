@@ -561,3 +561,15 @@ code {
   flex: 1;
   color: var(--text-2);
 }
+
+.composer-error {
+  margin: 0 0.9rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius);
+  background: var(--amber-bg);
+  color: var(--amber);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}

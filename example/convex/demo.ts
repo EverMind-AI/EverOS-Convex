@@ -75,11 +75,18 @@ export const clearAll = action({
     conversationsDeleted: v.number(),
     customersCleared: v.number(),
   }),
-  handler: async (ctx, args) => {
-    const { threadIds, customerIds } = await ctx.runQuery(
-      internal.demo.listTargets,
-      { customerId: args.customerId },
-    );
+  // Return type annotated: this action calls a query from the same module, so
+  // its inferred type would be circular through the generated api.
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ conversationsDeleted: number; customersCleared: number }> => {
+    const { threadIds, customerIds }: {
+      threadIds: string[];
+      customerIds: string[];
+    } = await ctx.runQuery(internal.demo.listTargets, {
+      customerId: args.customerId,
+    });
     for (const threadId of threadIds) {
       await anyAgent.deleteThreadSync(ctx, { threadId });
     }

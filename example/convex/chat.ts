@@ -4,6 +4,7 @@ import { Agent, stepCountIs } from "@convex-dev/agent";
 import { createOpenAI } from "@ai-sdk/openai";
 import { EverOS } from "@everos/convex";
 import { components, internal } from "./_generated/api.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import {
   action,
   internalMutation,
@@ -96,6 +97,11 @@ const PRIOR_SESSION_FACTS = [
   "I had a webhook delivery bug before — retries with exponential backoff fixed it.",
   "Please follow up by email, not phone. My timezone is US Pacific.",
 ];
+
+// The demo runs on our own LLM key with no sign-in, so each conversation gets
+// a fixed budget. A visitor can start over with a new browser profile; this is
+// a spend guard against loops and casual abuse, not access control.
+const DEMO_MESSAGE_LIMIT = 12;
 
 // ---------------------------------------------------------------------------
 // Conversation lifecycle
@@ -362,6 +368,21 @@ function toRecallRows(
   }));
 }
 
+// Claim one message from the conversation's budget. A mutation so the
+// check and the increment are a single transaction.
+export const reserveMessageSlot = internalMutation({
+  args: { conversationId: v.id("conversations") },
+  returns: v.object({ allowed: v.boolean(), remaining: v.number() }),
+  handler: async (ctx, args) => {
+    const conv = await ctx.db.get(args.conversationId);
+    if (!conv) throw new Error("Conversation not found");
+    const used = conv.messageCount ?? 0;
+    if (used >= DEMO_MESSAGE_LIMIT) return { allowed: false, remaining: 0 };
+    await ctx.db.patch(args.conversationId, { messageCount: used + 1 });
+    return { allowed: true, remaining: DEMO_MESSAGE_LIMIT - used - 1 };
+  },
+});
+
 export const sendMessage = action({
   args: {
     conversationId: v.string(),
@@ -369,11 +390,29 @@ export const sendMessage = action({
     prompt: v.string(),
   },
   returns: v.object({ text: v.string(), recalledCount: v.number() }),
-  handler: async (ctx, args) => {
-    const conv = await ctx.runQuery(internal.chat.getConvInternal, {
-      conversationId: args.conversationId,
-    });
+  // The return type is annotated because this action calls a query declared in
+  // the same module, which makes its type circular through the generated api.
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ text: string; recalledCount: number }> => {
+    const conv: Doc<"conversations"> | null = await ctx.runQuery(
+      internal.chat.getConvInternal,
+      { conversationId: args.conversationId as Id<"conversations"> },
+    );
     if (!conv) throw new Error("Conversation not found");
+
+    const slot = await ctx.runMutation(internal.chat.reserveMessageSlot, {
+      conversationId: args.conversationId as Id<"conversations">,
+    });
+    if (!slot.allowed) {
+      throw new Error(
+        `This shared demo allows ${DEMO_MESSAGE_LIMIT} messages per ` +
+          "conversation. Install the component to run it without limits: " +
+          "npm i @everos/convex",
+      );
+    }
+
     const def = AGENTS[conv.currentTier];
     const threadId =
       conv.currentTier === "tier2" && conv.tier2ThreadId
@@ -463,10 +502,15 @@ export const setEscalated = internalMutation({
 export const escalate = action({
   args: { conversationId: v.string(), customerId: v.string() },
   returns: v.object({ text: v.string(), recalledCount: v.number() }),
-  handler: async (ctx, args) => {
-    const conv = await ctx.runQuery(internal.chat.getConvInternal, {
-      conversationId: args.conversationId,
-    });
+  // Annotated for the same reason as sendMessage above.
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ text: string; recalledCount: number }> => {
+    const conv: Doc<"conversations"> | null = await ctx.runQuery(
+      internal.chat.getConvInternal,
+      { conversationId: args.conversationId as Id<"conversations"> },
+    );
     if (!conv) throw new Error("Conversation not found");
     if (conv.currentTier === "tier2" && conv.tier2ThreadId) {
       return { text: "", recalledCount: 0 };

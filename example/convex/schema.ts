@@ -16,6 +16,9 @@ export default defineSchema({
     tier2ThreadId: v.optional(v.string()),
     escalatedAt: v.optional(v.number()),
     seeded: v.boolean(),
+    // Public-demo spend guard: this app is linked from a components directory
+    // and runs on our LLM key, so each conversation gets a fixed budget.
+    messageCount: v.optional(v.number()),
   }).index("by_customer", ["customerId"]),
 
   // Latest set of memories recalled for a conversation — shown live in the

@@ -3,3 +3,5 @@ dist
 .env.local
 .convex
 .DS_Store
+.vercel
+.env*

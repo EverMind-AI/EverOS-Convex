@@ -1,0 +1,8 @@
+# A .vercelignore replaces .gitignore for uploads, so dist/ (gitignored, built
+# locally) ships while secrets and heavy directories stay out.
+node_modules
+.env
+.env.local
+.env.*.local
+.convex
+.vercel

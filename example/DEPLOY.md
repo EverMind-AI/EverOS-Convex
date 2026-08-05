@@ -29,19 +29,34 @@ public and its memories should be disposable.
 
 ## 2. Frontend
 
-Any static host works. The build must run `convex deploy` first so
-`VITE_CONVEX_URL` points at the production deployment:
+Live at **https://everos-convex-demo.vercel.app** (Vercel project
+`everos-convex-demo`).
 
-```
-Build command:      npx convex deploy --cmd 'npm run build'
-Output directory:   dist
-Root directory:     example
-Env var:            CONVEX_DEPLOY_KEY   (from the Convex dashboard, Production)
+This app links the component with `file:..`, which cannot resolve if a host
+only uploads `example/`, so the bundle is **built locally and uploaded
+prebuilt**. `vercel.json` skips the install and build steps and serves `dist/`,
+and `.vercelignore` (which replaces `.gitignore` for uploads) lets the
+gitignored `dist/` ship while keeping `.env.local` and `node_modules` out.
+
+Build and deploy in one go:
+
+```bash
+cd example
+npx convex deploy --cmd 'npm run build'   # backend + frontend built against prod
+npx vercel deploy --prod --yes
 ```
 
-On Vercel that is the whole configuration. `npm run build` is
-`tsc -b && vite build` and type-checks strictly, so a type error fails the
-deploy rather than shipping a broken bundle.
+Build with `npx convex deploy --cmd 'npm run build'`, never a bare
+`npm run build`: the wrapper injects the **production** `VITE_CONVEX_URL`,
+while a bare build reads `.env.local` and bakes in the **dev** deployment URL.
+After building, confirm the right deployment is in the bundle:
+
+```bash
+grep -o "https://[a-z0-9-]*\.convex\.cloud" dist/assets/*.js | sort -u
+```
+
+`npm run build` is `tsc -b && vite build` and type-checks strictly, so a type
+error fails the build rather than shipping a broken bundle.
 
 ## 3. Cost and abuse
 
@@ -62,7 +77,9 @@ Before launch:
 
 `npx convex run demo:clearAll --prod` deletes every demo conversation, the
 console state, and the customers' EverOS memories. Run it after recording a
-video and before a launch so the first visitor sees a clean slate.
+video and before a launch so the first visitor sees a clean slate. Visitors
+type into a memory store we own, so this is also the privacy hygiene step:
+run it periodically once the link is public.
 
 ## Checklist before the demo link goes public
 

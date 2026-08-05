@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "echo 'skipped: this app links the component with file:.., so it is built locally (see DEPLOY.md)'",
+  "buildCommand": "echo 'skipped: dist/ is uploaded prebuilt'",
+  "outputDirectory": "dist"
+}

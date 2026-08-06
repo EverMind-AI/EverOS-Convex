@@ -904,7 +904,10 @@ export const getPendingStatus = query({
     lastError: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
-    const cap = args.limit ?? 100;
+    // Reactive callers re-run this whenever the queue changes, so the default
+    // is a number worth reading rather than an exact census: four index reads
+    // of this size, and `capped` says when the real figure is higher.
+    const cap = args.limit ?? 25;
     let unextracted = 0;
     let failed = 0;
     let capped = false;

@@ -102,6 +102,9 @@ const PRIOR_SESSION_FACTS = [
 // a fixed budget. A visitor can start over with a new browser profile; this is
 // a spend guard against loops and casual abuse, not access control.
 const DEMO_MESSAGE_LIMIT = 12;
+// A budgeted message is only a spend bound if the message itself is bounded:
+// the agent runs up to 5 steps, each resending the full context.
+const MAX_PROMPT_CHARS = 2000;
 
 // ---------------------------------------------------------------------------
 // Conversation lifecycle
@@ -390,6 +393,7 @@ export const sendMessage = action({
     prompt: v.string(),
   },
   returns: v.object({ text: v.string(), recalledCount: v.number() }),
+  // MAX_PROMPT_CHARS below bounds what one budgeted message can cost.
   // The return type is annotated because this action calls a query declared in
   // the same module, which makes its type circular through the generated api.
   handler: async (
@@ -401,6 +405,12 @@ export const sendMessage = action({
       { conversationId: args.conversationId as Id<"conversations"> },
     );
     if (!conv) throw new Error("Conversation not found");
+
+    if (args.prompt.length > MAX_PROMPT_CHARS) {
+      throw new Error(
+        `This shared demo caps messages at ${MAX_PROMPT_CHARS} characters.`,
+      );
+    }
 
     const slot = await ctx.runMutation(internal.chat.reserveMessageSlot, {
       conversationId: args.conversationId as Id<"conversations">,
@@ -514,6 +524,19 @@ export const escalate = action({
     if (!conv) throw new Error("Conversation not found");
     if (conv.currentTier === "tier2" && conv.tier2ThreadId) {
       return { text: "", recalledCount: 0 };
+    }
+
+    // Escalation runs a full tier-2 generation, so it draws on the same
+    // budget as a message. Without this it is an unmetered LLM call.
+    const slot = await ctx.runMutation(internal.chat.reserveMessageSlot, {
+      conversationId: args.conversationId as Id<"conversations">,
+    });
+    if (!slot.allowed) {
+      throw new Error(
+        `This shared demo allows ${DEMO_MESSAGE_LIMIT} messages per ` +
+          "conversation. Install the component to run it without limits: " +
+          "npm i @everos/convex",
+      );
     }
 
     // Fresh thread for the specialist — zero shared chat history.

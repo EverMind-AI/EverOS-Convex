@@ -573,3 +573,16 @@ code {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+
+.pipeline {
+  padding: 0.4rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--blue);
+  background: var(--blue-bg);
+}
+
+.pipeline-error {
+  color: var(--amber);
+  background: var(--amber-bg);
+}

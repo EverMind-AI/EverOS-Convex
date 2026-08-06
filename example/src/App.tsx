@@ -413,6 +413,10 @@ const EVENT_LABEL: Record<string, string> = {
 
 function ActivityCard({ conversationId }: { conversationId: string }) {
   const events = useQuery(api.chat.listMemoryEvents, { conversationId });
+  // Reactive, so the count ticks down on its own as EverOS extracts.
+  const pipeline = useQuery(api.chat.getMemoryPipeline, {
+    customerId: CUSTOMER_ID,
+  });
   return (
     <div className="card">
       <div className="card-head">
@@ -423,6 +427,16 @@ function ActivityCard({ conversationId }: { conversationId: string }) {
           </span>
         </span>
       </div>
+      {pipeline && (pipeline.unextracted > 0 || pipeline.failed > 0) && (
+        <div
+          className={`pipeline${pipeline.failed > 0 ? " pipeline-error" : ""}`}
+          title={pipeline.lastError ?? undefined}
+        >
+          {pipeline.failed > 0
+            ? `${pipeline.failed} memor${pipeline.failed === 1 ? "y" : "ies"} failed to save`
+            : `${pipeline.unextracted} being written to EverOS…`}
+        </div>
+      )}
       <div className="card-body log">
         {!events || events.length === 0 ? (
           <div className="muted">No activity yet.</div>

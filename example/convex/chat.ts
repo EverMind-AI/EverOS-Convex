@@ -238,6 +238,22 @@ export const getRecalls = query({
   },
 });
 
+// Live view of the write pipeline. EverOS extraction is asynchronous, so
+// without this the console looks idle between "you said it" and "it is
+// searchable" — and a genuine failure looks the same as slow indexing.
+export const getMemoryPipeline = query({
+  args: { customerId: v.string() },
+  returns: v.object({
+    unextracted: v.number(),
+    failed: v.number(),
+    capped: v.boolean(),
+    lastError: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    return await everos.getPendingStatus(ctx, { userId: args.customerId });
+  },
+});
+
 export const listMemoryEvents = query({
   args: { conversationId: v.string() },
   handler: async (ctx, args) => {

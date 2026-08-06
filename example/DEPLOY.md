@@ -81,6 +81,15 @@ video and before a launch so the first visitor sees a clean slate. Visitors
 type into a memory store we own, so this is also the privacy hygiene step:
 run it periodically once the link is public.
 
+## 5. What the console shows
+
+The right-hand console has a live pipeline line above the activity log: it
+reports how many memories are still being written to EverOS and turns amber
+with the reason if any failed. It is a reactive Convex query over the
+component's `getPendingStatus`, so the count falls on its own as extraction
+completes. Worth pointing a camera at: it makes the asynchronous write path
+visible instead of looking like lag.
+
 ## Checklist before the demo link goes public
 
 - [ ] Backend deployed, env vars set on production

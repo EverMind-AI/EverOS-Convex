@@ -10,6 +10,7 @@ import {
   query,
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import schema, { kind } from "./schema.js";
 import {
   addMemories,
@@ -161,29 +162,51 @@ export const claimQueued = internalMutation({
     projectId: v.optional(v.string()),
     eager: v.optional(v.boolean()),
   },
-  returns: v.array(
-    v.object({
-      _id: v.id("pending"),
-      userId: v.string(),
-      content: v.string(),
-      role: v.union(v.literal("user"), v.literal("assistant")),
-      sessionId: v.optional(v.string()),
-      attempts: v.number(),
-    }),
-  ),
-  handler: async (ctx, args) => {
+  returns: v.object({
+    rows: v.array(
+      v.object({
+        _id: v.id("pending"),
+        userId: v.string(),
+        content: v.string(),
+        role: v.union(v.literal("user"), v.literal("assistant")),
+        sessionId: v.optional(v.string()),
+        attempts: v.number(),
+      }),
+    ),
+    // The recovery sweep committed alongside the claim. A flush that reaches
+    // the end cancels it; one that dies does not, and the sweep fires.
+    sweepId: v.union(v.id("_scheduled_functions"), v.null()),
+  }),
+  // Annotated because this mutation schedules a function from the same module,
+  // which makes its inferred type circular through the generated api.
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    rows: Array<{
+      _id: Id<"pending">;
+      userId: string;
+      content: string;
+      role: "user" | "assistant";
+      sessionId?: string;
+      attempts: number;
+    }>;
+    sweepId: Id<"_scheduled_functions"> | null;
+  }> => {
     const limit = args.limit ?? 25;
     const now = Date.now();
     const rows = await ctx.db
       .query("pending")
       .withIndex("by_status", (q) => q.eq("status", "queued"))
       .take(limit);
-    // Top up with rows abandoned by an action that never reported back.
-    if (rows.length < limit) {
+    // Always look for rows abandoned by an action that never reported back.
+    // Gating this on a non-full batch would starve reclaim exactly when the
+    // queue is busy, which is when actions are most likely to be cut short.
+    {
       const stale = await ctx.db
         .query("pending")
         .withIndex("by_status", (q) => q.eq("status", "sending"))
-        .take(limit - rows.length);
+        .take(limit);
       for (const r of stale) {
         if (now - (r.claimedAt ?? 0) <= STALE_CLAIM_MS) continue;
         // Count the abandoned attempt. Otherwise a row whose action dies every
@@ -214,7 +237,14 @@ export const claimQueued = internalMutation({
 
     const claimed = [];
     for (const r of rows) {
-      await ctx.db.patch(r._id, { status: "sending", claimedAt: now });
+      // `attempts` is carried from the reclaim branch above. Patching only
+      // status/claimedAt would drop it, so a row that is always abandoned
+      // would be reclaimed forever and never reach MAX_ATTEMPTS.
+      await ctx.db.patch(r._id, {
+        status: "sending",
+        claimedAt: now,
+        attempts: r.attempts,
+      });
       claimed.push({
         _id: r._id,
         userId: r.userId,
@@ -231,16 +261,21 @@ export const claimQueued = internalMutation({
     // failed flush schedule a flush. Committing the sweep in the same
     // transaction as the claim makes recovery durable. It terminates on its
     // own — a sweep that claims nothing schedules nothing.
+    let sweepId = null;
     if (claimed.length > 0) {
-      await ctx.scheduler.runAfter(STALE_CLAIM_MS + 1_000, internal.lib.flush, {
-        apiKey: args.apiKey,
-        baseUrl: args.baseUrl,
-        appId: args.appId,
-        projectId: args.projectId,
-        eager: args.eager,
-      });
+      sweepId = await ctx.scheduler.runAfter(
+        STALE_CLAIM_MS + 1_000,
+        internal.lib.flush,
+        {
+          apiKey: args.apiKey,
+          baseUrl: args.baseUrl,
+          appId: args.appId,
+          projectId: args.projectId,
+          eager: args.eager,
+        },
+      );
     }
-    return claimed;
+    return { rows: claimed, sweepId };
   },
 });
 
@@ -249,6 +284,11 @@ export const markSent = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     for (const id of args.ids) {
+      // A row can be deleted underneath us by `forgetUser` / `forgetSession`.
+      // Patching it would throw, and because the mutation is transactional the
+      // whole group would stay unmarked and be re-sent to EverOS.
+      const row = await ctx.db.get(id);
+      if (!row) continue;
       await ctx.db.patch(id, { status: "sent", claimedAt: undefined });
     }
     return null;
@@ -339,13 +379,16 @@ export const flush = internalAction({
       appId: args.appId,
       projectId: args.projectId,
     };
-    const claimed = await ctx.runMutation(internal.lib.claimQueued, {
-      apiKey: args.apiKey,
-      baseUrl: args.baseUrl,
-      appId: args.appId,
-      projectId: args.projectId,
-      eager: args.eager,
-    });
+    const { rows: claimed, sweepId } = await ctx.runMutation(
+      internal.lib.claimQueued,
+      {
+        apiKey: args.apiKey,
+        baseUrl: args.baseUrl,
+        appId: args.appId,
+        projectId: args.projectId,
+        eager: args.eager,
+      },
+    );
     let sent = 0;
     let failed = 0;
     let retryAfter = -1;
@@ -419,6 +462,12 @@ export const flush = internalAction({
         eager: args.eager,
       });
     }
+
+    // Every claimed row now has a recorded outcome, so the recovery sweep is
+    // not needed. Leaving it would mean an outage schedules two successors per
+    // flush (this retry and the sweep), and each of those two more, so upstream
+    // failure would be met with escalating traffic instead of backoff.
+    if (sweepId !== null) await ctx.scheduler.cancel(sweepId);
     return { sent, failed };
   },
 });
@@ -474,12 +523,23 @@ export const runExtraction = internalAction({
       );
       return null;
     }
+    if (lastError === undefined) {
+      // Out of retries with EverOS reporting "no_extraction" every time. That
+      // is the expected outcome when a sibling chain already drained this
+      // session's buffer: two `remember` calls in one session schedule two
+      // extractions against one buffer, the first drains it and the second
+      // finds nothing. The content is ingested and covered by the sibling, so
+      // retire these rows. Keeping them would leave `sent` a state rows never
+      // leave, growing the table forever and pinning getPendingStatus above
+      // zero for the life of the app.
+      await ctx.runMutation(internal.lib.markExtracted, { ids: args.ids });
+      return null;
+    }
+    // A genuine error (network, auth) rather than an empty buffer. Keep the
+    // rows and record why, so it surfaces through `getPendingStatus`.
     await ctx.runMutation(internal.lib.markExtractionStalled, {
       ids: args.ids,
-      error:
-        lastError ??
-        "EverOS reported no extraction after repeated flushes; the content is " +
-          "ingested but not yet searchable.",
+      error: lastError,
     });
     return null;
   },
@@ -839,26 +899,26 @@ export const forgetSession = action({
 // forgetUser (action) — delete ALL of a user's memories, remote + local
 // ===========================================================================
 
+// Deletes a page at a time and reports whether more remains. Collecting a
+// user's whole history in one transaction makes deletion fail exactly for the
+// heaviest users — the ones most likely to invoke an erasure request.
+const DELETE_PAGE = 200;
+
 export const clearUserLocal = internalMutation({
   args: { userId: v.string() },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
-    const memories = await ctx.db
-      .query("memories")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const row of memories) await ctx.db.delete(row._id);
-    const pending = await ctx.db
-      .query("pending")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const row of pending) await ctx.db.delete(row._id);
-    const usage = await ctx.db
-      .query("usage")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const row of usage) await ctx.db.delete(row._id);
-    return null;
+    let budget = DELETE_PAGE;
+    for (const table of ["memories", "pending", "usage"] as const) {
+      const rows = await ctx.db
+        .query(table)
+        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+        .take(budget + 1);
+      for (const row of rows.slice(0, budget)) await ctx.db.delete(row._id);
+      budget -= Math.min(rows.length, budget);
+      if (budget <= 0) return true; // more to do
+    }
+    return false;
   },
 });
 
@@ -881,9 +941,13 @@ export const forgetUser = action({
     const { deletedCount } = await deleteUserMemories(config, {
       userId: args.userId,
     });
-    await ctx.runMutation(internal.lib.clearUserLocal, {
-      userId: args.userId,
-    });
+    // Loop rather than delete everything in one transaction.
+    let more = true;
+    while (more) {
+      more = await ctx.runMutation(internal.lib.clearUserLocal, {
+        userId: args.userId,
+      });
+    }
     return { deletedCount };
   },
 });

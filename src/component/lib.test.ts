@@ -235,6 +235,47 @@ describe("remember + flush", () => {
     expect(after[0]?.status).not.toBe("sending");
   });
 
+  test("retires rows when a sibling extraction already drained the buffer", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    let flushCalls = 0;
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+      // Two remembers in one session schedule two extractions against one
+      // server-side buffer. The first drains it; every later one sees an empty
+      // buffer and reports no_extraction forever.
+      "/api/v2/memory/flush": () => {
+        flushCalls++;
+        return {
+          data: { status: flushCalls === 1 ? "extracted" : "no_extraction" },
+        };
+      },
+    });
+
+    await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "first",
+      sessionId: "s1",
+      ...CREDS,
+    });
+    await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "second",
+      sessionId: "s1",
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // `sent` must not be a state rows can never leave: the table would grow
+    // for the life of the app and getPendingStatus would never read zero.
+    const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(rows).toHaveLength(0);
+    const status = await t.query(api.lib.getPendingStatus, { userId: "u1" });
+    expect(status.unextracted).toBe(0);
+  });
+
   test("concurrent flushes never ingest the same row twice", async () => {
     const t = convexTest(schema, modules);
     const adds: any[] = [];

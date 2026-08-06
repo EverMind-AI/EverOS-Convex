@@ -6,6 +6,10 @@
 
 export const DEFAULT_BASE_URL = "https://api.evermind.ai";
 
+// Must stay below the ingest claim lease in lib.ts, so a request can never
+// still be running when its rows are reclaimed.
+const REQUEST_TIMEOUT_MS = 60_000;
+
 /** EverOS wire memory_type -> app-facing memory kind. */
 export function memoryTypeToKind(
   memoryType: string,
@@ -47,6 +51,9 @@ async function everosRequest<T>(
   body: Record<string, unknown>,
 ): Promise<T> {
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  // Bounded well inside the ingest claim lease. A request that outlived the
+  // lease would be reclaimed and re-sent while still in flight, so the same
+  // content could reach EverOS twice.
   const res = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
@@ -54,6 +61,7 @@ async function everosRequest<T>(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -73,8 +81,20 @@ async function everosRequest<T>(
     );
   }
   const text = await res.text();
-  if (!text) return null as T;
-  return JSON.parse(text) as T;
+  if (!text) {
+    throw new Error(
+      `EverOS API ${path} returned ${res.status} with an empty body; expected ` +
+        "a JSON response.",
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `EverOS API ${path} returned ${res.status} with a non-JSON body: ` +
+        text.slice(0, 200),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

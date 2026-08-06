@@ -198,6 +198,40 @@ describe("remember + flush", () => {
     expect(rows[0].content).toBe("new work");
   });
 
+  test("recovers rows claimed by a flush that died before reporting back", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ data: { status: "queued", message_count: 1 } }), {
+          status: 200,
+        }),
+      ),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "claimed then abandoned",
+        role: "user",
+        status: "queued",
+        attempts: 0,
+      });
+    });
+  
+    // Claim the row and then stop, exactly as an action that dies mid-flight
+    // leaves things. Nothing else happens: no further remember(), no manual flush.
+    await t.mutation(internal.lib.claimQueued, { ...CREDS });
+    const stranded = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(stranded[0].status).toBe("sending");
+  
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  
+    // The claim scheduled its own recovery, so the row was picked back up.
+    const after = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(after[0]?.status).not.toBe("sending");
+  });
+
   test("concurrent flushes never ingest the same row twice", async () => {
     const t = convexTest(schema, modules);
     const adds: any[] = [];

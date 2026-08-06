@@ -151,7 +151,16 @@ const RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000];
  * until the HTTP round trip returns) and ingest the same content twice.
  */
 export const claimQueued = internalMutation({
-  args: { limit: v.optional(v.number()) },
+  args: {
+    limit: v.optional(v.number()),
+    // Carried so the claim can schedule its own recovery in the same
+    // transaction (see the sweep below).
+    apiKey: v.string(),
+    baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
+    eager: v.optional(v.boolean()),
+  },
   returns: v.array(
     v.object({
       _id: v.id("pending"),
@@ -176,7 +185,22 @@ export const claimQueued = internalMutation({
         .withIndex("by_status", (q) => q.eq("status", "sending"))
         .take(limit - rows.length);
       for (const r of stale) {
-        if (now - (r.claimedAt ?? 0) > STALE_CLAIM_MS) rows.push(r);
+        if (now - (r.claimedAt ?? 0) <= STALE_CLAIM_MS) continue;
+        // Count the abandoned attempt. Otherwise a row whose action dies every
+        // time is reclaimed forever instead of eventually being given up on.
+        const attempts = r.attempts + 1;
+        if (attempts >= MAX_ATTEMPTS) {
+          await ctx.db.patch(r._id, {
+            status: "failed",
+            attempts,
+            claimedAt: undefined,
+            lastError:
+              "Ingest was claimed but never completed, after " +
+              `${attempts} attempts.`,
+          });
+          continue;
+        }
+        rows.push({ ...r, attempts });
       }
     }
     // Opportunistic cleanup of rows left behind by 0.1, which marked a row
@@ -198,6 +222,22 @@ export const claimQueued = internalMutation({
         role: r.role,
         sessionId: r.sessionId,
         attempts: r.attempts,
+      });
+    }
+
+    // Schedule the recovery sweep here, not at the end of the flush: if the
+    // action dies right after claiming, code at the end of it never runs, and
+    // the rows would sit in `sending` forever because only `remember` and a
+    // failed flush schedule a flush. Committing the sweep in the same
+    // transaction as the claim makes recovery durable. It terminates on its
+    // own — a sweep that claims nothing schedules nothing.
+    if (claimed.length > 0) {
+      await ctx.scheduler.runAfter(STALE_CLAIM_MS + 1_000, internal.lib.flush, {
+        apiKey: args.apiKey,
+        baseUrl: args.baseUrl,
+        appId: args.appId,
+        projectId: args.projectId,
+        eager: args.eager,
       });
     }
     return claimed;
@@ -299,7 +339,13 @@ export const flush = internalAction({
       appId: args.appId,
       projectId: args.projectId,
     };
-    const claimed = await ctx.runMutation(internal.lib.claimQueued, {});
+    const claimed = await ctx.runMutation(internal.lib.claimQueued, {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+      eager: args.eager,
+    });
     let sent = 0;
     let failed = 0;
     let retryAfter = -1;

@@ -88,15 +88,6 @@ describe("remember + flush", () => {
     // rather than accumulating for the life of the app.
     const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
     expect(row).toBeNull();
-
-    // Usage was logged.
-    const usage = await t.run(async (ctx) =>
-      ctx.db
-        .query("usage")
-        .withIndex("by_user", (q) => q.eq("userId", "u1"))
-        .collect(),
-    );
-    expect(usage.some((u) => u.op === "remember")).toBe(true);
   });
 
   test("retries flush while the ingest hasn't landed (no_extraction)", async () => {
@@ -163,42 +154,6 @@ describe("remember + flush", () => {
     const status = await t.query(api.lib.getPendingStatus, { userId: "u1" });
     expect(status.failed).toBe(1);
     expect(status.lastError).toContain("500");
-  });
-
-  test("clears rows left behind by the previous version", async () => {
-    const t = convexTest(schema, modules);
-    mockEveros({
-      "/api/v2/memory/add": () => ({
-        data: { status: "queued", message_count: 1 },
-      }),
-    });
-    // Rows written by 0.1: a status and fields this version no longer writes.
-    // Convex validates every existing document on deploy, so an upgrade must
-    // still accept them, and the leftovers must not linger forever.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("pending", {
-        userId: "u1",
-        content: "written by 0.1",
-        role: "user",
-        status: "extracted",
-        attempts: 0,
-        metadata: { source: "email" },
-        everosTaskId: "task-from-v1",
-      });
-      await ctx.db.insert("pending", {
-        userId: "u1",
-        content: "new work",
-        role: "user",
-        status: "queued",
-        attempts: 0,
-      });
-    });
-
-    await t.action(internal.lib.flush, { eager: false, ...CREDS });
-
-    const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
-    expect(rows).toHaveLength(1);
-    expect(rows[0].content).toBe("new work");
   });
 
   test("recovers rows claimed by a flush that died before reporting back", async () => {
@@ -308,8 +263,8 @@ describe("remember + flush", () => {
     });
 
     await Promise.all([
-      t.action(internal.lib.flush, { eager: false, ...CREDS }),
-      t.action(internal.lib.flush, { eager: false, ...CREDS }),
+      t.action(internal.lib.flush, { ...CREDS }),
+      t.action(internal.lib.flush, { ...CREDS }),
     ]);
 
     const sent = adds.flatMap((b) => b.messages.map((m: any) => m.content));
@@ -346,7 +301,7 @@ describe("namespace scoping", () => {
         attempts: 0,
       });
     });
-    await t.action(internal.lib.flush, { eager: false, ...SCOPED });
+    await t.action(internal.lib.flush, { ...SCOPED });
     await t.action(api.lib.recall, { userId: "u1", query: "q", ...SCOPED });
     await t.action(api.lib.forgetUser, { userId: "u1", ...SCOPED });
 
@@ -383,7 +338,7 @@ describe("namespace scoping", () => {
       projectId: "prod",
       ...CREDS,
     });
-    await t.action(internal.lib.flush, { eager: false, ...CREDS });
+    await t.action(internal.lib.flush, { ...CREDS });
 
     const byApp = Object.fromEntries(
       adds.map((b) => [b.app_id, b.messages.map((m: any) => m.content)]),
@@ -469,17 +424,6 @@ describe("recall", () => {
     expect(results[0].atomicFacts![0].score).toBeCloseTo(0.79);
     expect(results[0].atomicFacts![0].sessionId).toBeUndefined();
 
-    // Local index hydrated.
-    const mem = await t.run(async (ctx) =>
-      ctx.db
-        .query("memories")
-        .withIndex("by_user", (q) => q.eq("userId", "u1"))
-        .collect(),
-    );
-    expect(mem).toHaveLength(1);
-    expect(mem[0].everosMemoryId).toBe("ep-1");
-    expect(mem[0].preview).toContain("espresso");
-    expect(mem[0].sessionId).toBe("s1");
   });
 
   test("renders profile items as readable text, not serialized records", async () => {
@@ -702,23 +646,7 @@ describe("forgetSession", () => {
   test("deletes the session remotely and clears matching local rows", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
-      await ctx.db.insert("memories", {
-        userId: "u1",
-        everosMemoryId: "ep-1",
-        kind: "episodic",
-        preview: "something",
-        sessionId: "s1",
-        syncedAt: Date.now(),
-      });
       // A different session's row must survive.
-      await ctx.db.insert("memories", {
-        userId: "u1",
-        everosMemoryId: "ep-2",
-        kind: "episodic",
-        preview: "other session",
-        sessionId: "s2",
-        syncedAt: Date.now(),
-      });
       await ctx.db.insert("pending", {
         userId: "u1",
         content: "queued in s1",
@@ -743,44 +671,49 @@ describe("forgetSession", () => {
     });
     expect(res.deletedCount).toBe(3);
 
-    const remaining = await t.run(async (ctx) =>
-      ctx.db.query("memories").collect(),
-    );
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].everosMemoryId).toBe("ep-2");
     const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
     expect(pending).toHaveLength(0);
   });
 });
 
 describe("listMemories", () => {
-  test("paginates the local index for a user", async () => {
+  test("pages what EverOS holds, not what past searches happened to return", async () => {
     const t = convexTest(schema, modules);
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 3; i++) {
-        await ctx.db.insert("memories", {
-          userId: "u1",
-          everosMemoryId: `ep-${i}`,
-          kind: "episodic",
-          preview: `memory ${i}`,
-          syncedAt: Date.now() + i,
-        });
-      }
-      await ctx.db.insert("memories", {
-        userId: "u2",
-        everosMemoryId: "other",
-        kind: "episodic",
-        preview: "not mine",
-        syncedAt: Date.now(),
-      });
+    let body: any;
+    mockEveros({
+      "/api/v2/memory/get": (b) => {
+        body = b;
+        return {
+          data: {
+            episodes: [
+              {
+                id: "ep-1",
+                user_id: "u1",
+                episode: "User moved to Lisbon",
+                type: "Conversation",
+                timestamp: "2026-07-08T19:13:21",
+              },
+            ],
+            total_count: 42,
+          },
+        };
+      },
     });
 
-    const page = await t.query(api.lib.listMemories, {
+    const page = await t.action(api.lib.listMemories, {
       userId: "u1",
-      paginationOpts: { numItems: 10, cursor: null },
+      page: 2,
+      pageSize: 10,
+      ...CREDS,
     });
-    expect(page.page).toHaveLength(3);
-    expect(page.page.every((m) => m.userId === "u1")).toBe(true);
+
+    expect(body.memory_type).toBe("episode");
+    expect(body.user_id).toBe("u1");
+    expect(body.page).toBe(2);
+    expect(page.totalCount).toBe(42);
+    expect(page.memories[0].text).toBe("User moved to Lisbon");
+    // Nothing was recalled first, which a mirror-backed list would require.
+    expect(page.memories).toHaveLength(1);
   });
 });
 
@@ -834,7 +767,7 @@ describe("flush batching", () => {
     });
 
     // eager: false so no extraction flushes are scheduled — isolate ingest.
-    await t.action(internal.lib.flush, { eager: false, ...CREDS });
+    await t.action(internal.lib.flush, { ...CREDS });
 
     // s1 (2 messages) + s2 (1) + user:u1 (1) = three ingest calls.
     expect(ingest).toHaveBeenCalledTimes(3);
@@ -879,13 +812,6 @@ describe("forgetUser", () => {
   test("batch-deletes remotely and clears all of the user's local rows", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
-      await ctx.db.insert("memories", {
-        userId: "u1",
-        everosMemoryId: "e1",
-        kind: "episodic",
-        preview: "p",
-        syncedAt: Date.now(),
-      });
       await ctx.db.insert("pending", {
         userId: "u1",
         content: "c",
@@ -893,15 +819,7 @@ describe("forgetUser", () => {
         status: "sent",
         attempts: 0,
       });
-      await ctx.db.insert("usage", { userId: "u1", op: "recall", ts: Date.now() });
       // A different user's row must be left untouched.
-      await ctx.db.insert("memories", {
-        userId: "u2",
-        everosMemoryId: "e2",
-        kind: "episodic",
-        preview: "other",
-        syncedAt: Date.now(),
-      });
     });
     mockEveros({
       "/api/v2/memory/delete": (body) => {
@@ -913,9 +831,6 @@ describe("forgetUser", () => {
     const res = await t.action(api.lib.forgetUser, { userId: "u1", ...CREDS });
     expect(res.deletedCount).toBe(5);
 
-    const mem = await t.run(async (ctx) => ctx.db.query("memories").collect());
-    expect(mem).toHaveLength(1);
-    expect(mem[0].userId).toBe("u2");
     const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
     expect(pending).toHaveLength(0);
   });

@@ -33,9 +33,7 @@ export default defineComponent("everos", {
 
 ## Component schema (own tables)
 
-- `memories`: { userId: string, everosMemoryId: string, kind: "episodic" | "semantic" | "profile", preview: string, sessionId?: string, syncedAt: number } — local index of what's stored in EverOS, so queries/joins stay reactive inside Convex
 - `pending`: { userId: string, content: string, status: "queued" | "sent" | "extracted" | "failed", attempts: number } — write-ahead queue AND read-your-writes source; a mutation enqueues, a scheduled action flushes to EverOS Cloud (mutations can't call external APIs). Rows in queued/sent are merged into `recall` results (marked `pending: true`, 15-min TTL) until a flush confirms extraction, so freshly saved content is never invisible
-- `usage`: { userId: string, op: "remember" | "recall", ts: number } — optional, for usage tracking/billing examples
 
 ## Component functions (public, all with validators)
 
@@ -45,7 +43,8 @@ export default defineComponent("everos", {
 - `getProfile` (action): fetch user's semantic/profile memory from EverOS
 - `forgetSession` (action): delete one session's memories in EverOS + matching local rows (the v2 API deletes by scope — user / agent / session — there is no single-memory delete)
 - `forgetUser` (action): delete ALL of a user's memories in EverOS + all local rows
-- `listMemories` (query): paginated local index per userId (use convex-helpers paginator)
+- `listMemories` (action): pages EverOS itself (`/api/v2/memory/get`, `memory_type: "episode"`). Deliberately not a local mirror: a list containing only what past searches returned is not a list of a user's memories, and any "what do you know about me" screen built on one silently omits the rest.
+- `rememberMessages` (mutation): a whole turn in one call, so the assistant's reply reaches memory too and a turn costs one scheduled flush rather than two
 
 ## Design decisions: where this component deviates from the EverOS API (and why)
 
@@ -61,7 +60,7 @@ Anyone changing either side should read this section first.
 | `recall` | `POST /api/v2/memory/search` | Returns extracted memories **plus** locally queued content (see §3); it is a superset of `search`. |
 | `getProfile` | `POST /api/v2/memory/get` (`memory_type: "profile"`) | Single purpose, so the memory_type is bound rather than exposed. |
 | `forgetSession` / `forgetUser` | `POST /api/v2/memory/delete` | The wire endpoint is scope-based; two named methods are clearer than one method with a mutually-exclusive arg union. |
-| `listMemories` | *(none — local table)* | Reactive Convex query over the local index; never hits EverOS. |
+| `listMemories` | `POST /api/v2/memory/get` (`memory_type: "episode"`) | Paged enumeration, from the source of truth. |
 
 `src/component/everos.ts` is the only layer that knows wire vocabulary, and its
 function names deliberately track it (`addMemories`, `searchMemories`,

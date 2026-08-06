@@ -20,32 +20,9 @@ export const pendingStatus = v.union(
   v.literal("sending"),
   v.literal("sent"),
   v.literal("failed"),
-  // Never written any more: 0.1 kept a row after extraction instead of
-  // deleting it. Still accepted so that upgrading an app whose table holds
-  // such rows does not fail schema validation on deploy; `claimQueued`
-  // clears them out a batch at a time.
-  v.literal("extracted"),
 );
 
 export default defineSchema({
-  // Local, reactive index of what's stored in EverOS. Populated from retrieval
-  // results (EverOS ingest is asynchronous and returns a task id, not a memory
-  // id, so rows are hydrated when memories come back from `recall`/`getProfile`).
-  // Keeping a local mirror lets app queries/joins stay reactive inside Convex.
-  memories: defineTable({
-    userId: v.string(), // app-owned id, so v.string() not v.id(...)
-    everosMemoryId: v.string(),
-    kind: kind,
-    preview: v.string(),
-    // EverOS session the memory was extracted from (when known) — lets
-    // forgetSession clear the matching local rows.
-    sessionId: v.optional(v.string()),
-    syncedAt: v.number(),
-  })
-    .index("by_user", ["userId"])
-    .index("by_everosMemoryId", ["everosMemoryId"])
-    .index("by_user_and_everosMemoryId", ["userId", "everosMemoryId"]),
-
   // Write-ahead queue. A mutation enqueues (mutations can't call external APIs);
   // a scheduled action flushes queued rows to the EverOS ingest API.
   pending: defineTable({
@@ -68,26 +45,12 @@ export default defineSchema({
     // ingest one client's rows under another's scope.
     appId: v.optional(v.string()),
     projectId: v.optional(v.string()),
-    // Neither of these is written any more. They are still declared because
-    // Convex validates every existing document against the schema on deploy,
-    // so removing a field that an earlier version wrote turns an upgrade into
-    // a failed deploy for the consuming app.
-    //   metadata:     0.1 accepted and stored it but never sent it anywhere.
-    //   everosTaskId: the v1 ingest API returned a task id; v2 has none.
-    metadata: v.optional(v.record(v.string(), v.any())),
-    everosTaskId: v.optional(v.string()),
+    // When the caller says this was said, if they told us.
+    saidAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
   })
     .index("by_status", ["status"])
-    .index("by_user", ["userId"])
     // Recall reads only a user's unextracted rows; without this it would scan
     // every row the user has ever written.
     .index("by_user_and_status", ["userId", "status"]),
-
-  // Optional usage log for billing / analytics examples.
-  usage: defineTable({
-    userId: v.string(),
-    op: v.union(v.literal("remember"), v.literal("recall")),
-    ts: v.number(),
-  }).index("by_user", ["userId"]),
 });

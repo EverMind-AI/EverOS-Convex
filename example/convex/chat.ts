@@ -497,16 +497,21 @@ export const sendMessage = action({
       },
     );
 
-    // 4. Remember this turn for future sessions/agents.
-    await everos.remember(ctx, {
+    // 4. Remember both halves of the turn for future sessions/agents.
+    // Storing only the prompt loses the answers and the commitments, which is
+    // exactly what a customer asks about when they come back.
+    await everos.rememberMessages(ctx, {
       userId: args.customerId,
-      content: args.prompt,
+      messages: [
+        { content: args.prompt, role: "user" },
+        { content: result.text, role: "assistant" },
+      ],
     });
     await ctx.runMutation(internal.chat.logEvent, {
       customerId: args.customerId,
       conversationId: args.conversationId,
       type: "remembered",
-      detail: `Customer message queued for memory extraction`,
+      detail: `Turn queued for memory extraction`,
     });
 
     return { text: result.text, recalledCount: recalled.length };

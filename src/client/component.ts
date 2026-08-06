@@ -1,8 +1,4 @@
-import type {
-  FunctionReference,
-  PaginationOptions,
-  PaginationResult,
-} from "convex/server";
+import type { FunctionReference } from "convex/server";
 
 /** App-facing memory kind. */
 export type MemoryKind = "episodic" | "profile";
@@ -60,17 +56,6 @@ export type PendingStatus = {
   lastError?: string;
 };
 
-export type MemoryDoc = {
-  _id: string;
-  _creationTime: number;
-  userId: string;
-  everosMemoryId: string;
-  kind: MemoryKind;
-  preview: string;
-  sessionId?: string;
-  syncedAt: number;
-};
-
 /**
  * The EverOS component's exposed API surface, as referenced from an app via
  * `components.everos`. Hand-written (rather than relying on generated
@@ -89,6 +74,7 @@ export type ComponentApi<
         content: string;
         role?: "user" | "assistant";
         sessionId?: string;
+        timestamp?: number;
         apiKey: string;
         baseUrl?: string;
         appId?: string;
@@ -96,6 +82,26 @@ export type ComponentApi<
         eager?: boolean;
       },
       { pendingId: string },
+      Name
+    >;
+    rememberMessages: FunctionReference<
+      "mutation",
+      "internal",
+      {
+        userId: string;
+        messages: Array<{
+          content: string;
+          role?: "user" | "assistant";
+          timestamp?: number;
+        }>;
+        sessionId?: string;
+        apiKey: string;
+        baseUrl?: string;
+        appId?: string;
+        projectId?: string;
+        eager?: boolean;
+      },
+      { pendingIds: string[] },
       Name
     >;
     recall: FunctionReference<
@@ -163,10 +169,18 @@ export type ComponentApi<
       Name
     >;
     listMemories: FunctionReference<
-      "query",
+      "action",
       "internal",
-      { userId: string; paginationOpts: PaginationOptions },
-      PaginationResult<MemoryDoc>,
+      {
+        userId: string;
+        page?: number;
+        pageSize?: number;
+        apiKey: string;
+        baseUrl?: string;
+        appId?: string;
+        projectId?: string;
+      },
+      { memories: RecalledMemory[]; totalCount: number },
       Name
     >;
   };

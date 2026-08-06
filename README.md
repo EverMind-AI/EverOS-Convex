@@ -111,14 +111,15 @@ export const recall = action({
 
 | Method | Kind | Description |
 | --- | --- | --- |
-| `everos.remember(ctx, { userId, content, role?, sessionId? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
+| `everos.remember(ctx, { userId, content, role?, sessionId?, timestamp? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
+| `everos.rememberMessages(ctx, { userId, messages, sessionId? })` | mutation | Remember a whole turn (prompt **and** reply) in one call |
 | `everos.recall(ctx, { userId, query, topK?, kind?, includeRecent? })` | action | Retrieve relevant memories, ranked (plus not-yet-extracted content marked `pending`) |
 | | | `topK` bounds the ranked episodes only. Profiles ride along, and up to 5 `pending` items may be appended, so size prompts from the returned array rather than from `topK`. |
 | `everos.getProfile(ctx, { userId })` | action | Fetch the user's profile / semantic memory |
 | `everos.forgetSession(ctx, { userId, sessionId })` | action | Delete one session's memories remotely + locally |
 | `everos.forgetUser(ctx, { userId })` | action | Delete ALL of a user's memories remotely + locally |
 | `everos.getPendingStatus(ctx, { userId })` | query | Whether anything is still on its way to EverOS, and why if it is stuck |
-| `everos.listMemories(ctx, { userId, paginationOpts })` | query | Reactive index of memories **seen so far via `recall`** — it is populated by `recall` only, so it stays empty until you call it |
+| `everos.listMemories(ctx, { userId, page?, pageSize? })` | action | Page through everything EverOS holds for a user, newest first |
 
 > **How ingestion works:** `remember` is a mutation (mutations can't make
 > external calls), so it writes to a durable `pending` queue and schedules a
@@ -126,11 +127,9 @@ export const recall = action({
 > asynchronously, so the local `memories` index is hydrated from retrieval
 > results rather than at ingest time.
 >
-> The component also drives extraction itself (`eagerExtraction: true`, the
-> default): EverOS Cloud does not extract on a schedule of its own, so without
-> this step ingested content would stay in its buffer and never become
-> searchable. Only pass `new EverOS(components.everos, { eagerExtraction:
-> false })` if your app calls the EverOS flush endpoint on its own.
+> The component also drives extraction itself, because EverOS Cloud does not
+> extract on a schedule of its own: without that step ingested content would
+> sit in its buffer and never become searchable.
 >
 > **If something looks missing**, `getPendingStatus` says whether it is still
 > in flight or actually failed. A rejected API key shows up there as

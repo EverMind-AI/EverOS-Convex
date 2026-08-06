@@ -87,19 +87,60 @@ simplification of the wire `memory_type` enum (`episode` / `profile` /
 
 ### 3. Behaviours the component owns
 
-- **Extraction scheduling.** EverOS Cloud does not extract on its own
-  schedule: without a `flush`, ingested messages sit in the accumulation
-  buffer indefinitely. Ingest also takes ~10s to land, and a flush inside
-  that window returns `no_extraction` (a silent no-op). The component
-  therefore schedules a flush 15s after ingest and retries at 20/40/80s until
-  EverOS reports `extracted`.
-- **Read-your-writes.** The server can return `unprocessed_messages`, but only
-  when the search carries `filters.session_id` as a top-level scalar, which a
-  cross-session recall by `userId` cannot supply. The component merges its own
-  queue instead, so freshly saved content is never invisible.
-- **Durability and retries.** `remember` cannot fail on a network error
-  because it only writes locally; the flush action retries up to 5 times
-  before marking a row failed.
+**The ingest state machine.** This is the part worth reviewing closely: it
+exists because Convex mutations cannot call external APIs, and Convex actions
+are neither transactional nor guaranteed to finish.
+
+```
+remember (mutation)          insert row `queued`, schedule flush
+   |
+flush (action)
+   |-- claimQueued (mutation) `queued` -> `sending` + claimedAt, atomically,
+   |                          and schedules its own recovery sweep
+   |-- POST /memory/add
+   |-- markSent (mutation)    -> `sent`, schedule runExtraction
+   |   or markFailed          -> back to `queued` (or `failed`), schedule retry
+   |
+runExtraction (action)        POST /memory/flush, retry 20/40/80s
+   |-- markExtracted          delete the row: EverOS now holds the memory
+   |   or markExtractionStalled  record why it is ingested but not searchable
+```
+
+Four properties this buys, each of which had a failing test before it existed:
+
+- **No duplicate ingest.** `remember` schedules a flush per call and actions
+  run concurrently, so rows must be claimed in a mutation (serializable)
+  rather than merely read. Reading them and marking them after the HTTP round
+  trip lets two flushes send the same content.
+- **No stranded rows.** An action can die between claiming and reporting. The
+  `claimedAt` lease lets a later flush reclaim the row, but *something has to
+  run that flush*: only `remember` and a failed flush schedule one, so a quiet
+  app would lose the content silently. `claimQueued` therefore schedules the
+  recovery sweep itself, committing it in the same transaction as the claim.
+  The sweep terminates on its own, because a sweep that claims nothing
+  schedules nothing. A reclaim counts as an attempt, so a row whose action
+  dies every time is eventually given up on.
+- **Retries actually happen.** A requeued row schedules its own retry
+  (5s/30s/2m/10m). Requeuing without scheduling leaves it waiting for a
+  `remember` that may never come.
+- **Extraction is driven, not awaited.** EverOS Cloud does not extract on its
+  own schedule: without a `flush`, ingested messages sit in the accumulation
+  buffer indefinitely. Ingest also takes ~10s to land, and a flush inside that
+  window returns `no_extraction`, indistinguishable from "nothing to do". So
+  extraction is scheduled 15s out and retried at 20/40/80s.
+
+**Read-your-writes.** The server can return `unprocessed_messages`, but only
+when the search carries `filters.session_id` as a top-level scalar, which a
+cross-session recall by `userId` cannot supply. The component merges its own
+queue instead, newest first and bounded by `topK`, so freshly saved content is
+never invisible and unranked rows cannot crowd out ranked ones in a prompt.
+
+**Observability.** `remember` returns before any network call happens, so
+`getPendingStatus` reports what is still in flight, what failed, and why. A
+rejected API key is otherwise indistinguishable from slow indexing.
+
+**Retention.** Rows are deleted once EverOS confirms extraction; `failed` rows
+are kept deliberately, as the only record that content never made it.
 
 ### 4. Assumptions that break if the server changes
 
@@ -116,6 +157,25 @@ Flag these to the component owner before shipping such a change:
   extending.
 - The `mode: "chat" | "agent"` field is wired through `addMemories` but unused
   in v0.1; agent memory ships once Cloud produces `agent_case` / `agent_skill`.
+
+### 5. Known trade-offs a reviewer should weigh
+
+- **The API key travels as a function argument**, including through scheduled
+  functions, so it is written to `_scheduled_functions` and visible to anyone
+  with Convex dashboard access. This follows Convex's component convention
+  (env vars are resolved app-side and threaded in, as `@convex-dev/twilio`
+  does) rather than reading `process.env` inside the component. The
+  alternative — storing it in a component-owned table — puts it at rest in the
+  database instead. Neither is obviously better; the current choice is the
+  conventional one.
+- **`usage` is written on every remember and recall and never read or
+  pruned.** It exists for billing/analytics examples. It should either grow a
+  read API or be removed.
+- **Session ids longer than 128 chars are truncated to their tail**, so two
+  ids sharing a suffix would collide into one session. Hashing would avoid it
+  at the cost of unreadable ids in EverOS.
+- **`getPendingStatus` returns a capped count**, not a census, because it is
+  re-run reactively. `capped` says when the real figure is higher.
 
 ## Client (app-side, src/client/index.ts)
 

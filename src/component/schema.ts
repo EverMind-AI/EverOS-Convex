@@ -20,6 +20,11 @@ export const pendingStatus = v.union(
   v.literal("sending"),
   v.literal("sent"),
   v.literal("failed"),
+  // Never written any more: 0.1 kept a row after extraction instead of
+  // deleting it. Still accepted so that upgrading an app whose table holds
+  // such rows does not fail schema validation on deploy; `claimQueued`
+  // clears them out a batch at a time.
+  v.literal("extracted"),
 );
 
 export default defineSchema({

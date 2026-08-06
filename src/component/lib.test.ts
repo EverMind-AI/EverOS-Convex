@@ -165,6 +165,39 @@ describe("remember + flush", () => {
     expect(status.lastError).toContain("500");
   });
 
+  test("clears rows left behind by the previous version", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+    });
+    // 0.1 marked a row `extracted` and kept it. Upgrading must neither fail
+    // schema validation nor leave the rows there forever.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "written by 0.1",
+        role: "user",
+        status: "extracted",
+        attempts: 0,
+      });
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "new work",
+        role: "user",
+        status: "queued",
+        attempts: 0,
+      });
+    });
+
+    await t.action(internal.lib.flush, { eager: false, ...CREDS });
+
+    const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe("new work");
+  });
+
   test("concurrent flushes never ingest the same row twice", async () => {
     const t = convexTest(schema, modules);
     const adds: any[] = [];

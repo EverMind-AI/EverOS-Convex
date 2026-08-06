@@ -175,6 +175,15 @@ export const claimQueued = internalMutation({
         if (now - (r.claimedAt ?? 0) > STALE_CLAIM_MS) rows.push(r);
       }
     }
+    // Opportunistic cleanup of rows left behind by 0.1, which marked a row
+    // `extracted` instead of deleting it. Bounded so a large backlog is
+    // cleared over several flushes rather than in one oversized transaction.
+    const legacy = await ctx.db
+      .query("pending")
+      .withIndex("by_status", (q) => q.eq("status", "extracted"))
+      .take(50);
+    for (const r of legacy) await ctx.db.delete(r._id);
+
     const claimed = [];
     for (const r of rows) {
       await ctx.db.patch(r._id, { status: "sending", claimedAt: now });

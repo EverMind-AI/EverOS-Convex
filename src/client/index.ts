@@ -1,9 +1,7 @@
-import type { PaginationOptions, PaginationResult } from "convex/server";
 import { createTool, type ToolCtx } from "@convex-dev/agent";
 import { z } from "zod";
 import type {
   ComponentApi,
-  MemoryDoc,
   MemoryKind,
   MemoryProfile,
   PendingStatus,
@@ -13,7 +11,6 @@ import type {
 export type {
   AtomicFact,
   ComponentApi,
-  MemoryDoc,
   MemoryKind,
   MemoryProfile,
   PendingStatus,
@@ -43,15 +40,6 @@ export type EverOSOptions = {
    */
   appId?: string;
   projectId?: string;
-  /**
-   * When true (the default), the component drives EverOS extraction after each
-   * ingest so remembered content becomes searchable.
-   *
-   * EverOS Cloud does **not** extract on a schedule of its own: with this off,
-   * ingested content stays in its buffer and never becomes searchable. Only
-   * set it to false if your app calls the EverOS flush endpoint itself.
-   */
-  eagerExtraction?: boolean;
 };
 
 // Minimal, permissive ctx shapes so the same method works from a query,
@@ -75,7 +63,6 @@ export class EverOS {
   private readonly baseUrl: string;
   private readonly appId?: string;
   private readonly projectId?: string;
-  private readonly eagerExtraction: boolean;
 
   constructor(
     public component: ComponentApi,
@@ -86,7 +73,6 @@ export class EverOS {
       options.baseUrl ?? process.env.EVEROS_BASE_URL ?? DEFAULT_BASE_URL;
     this.appId = options.appId ?? process.env.EVEROS_APP_ID;
     this.projectId = options.projectId ?? process.env.EVEROS_PROJECT_ID;
-    this.eagerExtraction = options.eagerExtraction ?? true;
   }
 
   // Resolve credentials lazily (at call time, not construction) so that a
@@ -117,12 +103,39 @@ export class EverOS {
       content: string;
       role?: "user" | "assistant";
       sessionId?: string;
+      /** When this was said. Defaults to when it reaches EverOS. */
+      timestamp?: number;
     },
   ): Promise<{ pendingId: string }> {
     return ctx.runMutation(this.component.lib.remember, {
       ...args,
       ...this.creds(),
-      eager: this.eagerExtraction,
+    });
+  }
+
+  /**
+   * Remember a whole turn in one call.
+   *
+   * An agent turn is the user's message and the assistant's reply. Storing
+   * only the prompt — which is what two separate `remember` calls tend to
+   * become — loses the half of the conversation where the answers and
+   * commitments are.
+   */
+  async rememberMessages(
+    ctx: RunMutationCtx,
+    args: {
+      userId: string;
+      messages: Array<{
+        content: string;
+        role?: "user" | "assistant";
+        timestamp?: number;
+      }>;
+      sessionId?: string;
+    },
+  ): Promise<{ pendingIds: string[] }> {
+    return ctx.runMutation(this.component.lib.rememberMessages, {
+      ...args,
+      ...this.creds(),
     });
   }
 
@@ -200,12 +213,20 @@ export class EverOS {
     return ctx.runQuery(this.component.lib.getPendingStatus, args);
   }
 
-  /** Paginate the local index of a user's memories (reactive). */
+  /**
+   * Page through what EverOS holds for a user, newest first.
+   *
+   * This reads EverOS, not a local mirror of past searches, so it is the list
+   * to build a "what do you know about me" screen on.
+   */
   async listMemories(
-    ctx: RunQueryCtx,
-    args: { userId: string; paginationOpts: PaginationOptions },
-  ): Promise<PaginationResult<MemoryDoc>> {
-    return ctx.runQuery(this.component.lib.listMemories, args);
+    ctx: RunActionCtx,
+    args: { userId: string; page?: number; pageSize?: number },
+  ): Promise<{ memories: RecalledMemory[]; totalCount: number }> {
+    return ctx.runAction(this.component.lib.listMemories, {
+      ...args,
+      ...this.creds(),
+    });
   }
 
   // -------------------------------------------------------------------------

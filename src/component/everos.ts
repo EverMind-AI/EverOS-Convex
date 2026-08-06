@@ -176,22 +176,12 @@ export type EverosProfile = {
   memcell_count?: number;
 };
 
-/** A stored-but-not-yet-extracted message (read-your-writes on the server). */
-export type EverosUnprocessedMessage = {
-  content?: string;
-  sender_id?: string;
-  role?: string;
-  timestamp?: number | string;
-  session_id?: string;
-};
-
 type SearchResponse = {
   data: {
     episodes?: EverosEpisode[];
     profiles?: EverosProfile[];
     agent_cases?: unknown[];
     agent_skills?: unknown[];
-    unprocessed_messages?: EverosUnprocessedMessage[];
   };
 };
 
@@ -221,25 +211,18 @@ type DeleteResponse = {
  * buffer shortly after (there is no task id to poll — see lib.ts for the
  * delayed-flush strategy).
  *
- * `mode` picks the extraction track and is bound to the session on its first
- * add (a later add with a different mode is rejected): "chat" (default) runs
- * the user-memory track; "agent" runs the agent boundary detector over the
- * full tool trajectory into the agent-memory track (cases / skills), with the
- * agent identified by the sender_id of the tool-calling assistant messages.
  */
 export async function addMemories(
   config: EverosConfig,
   args: {
     sessionId: string;
     messages: EverosMessage[];
-    mode?: "chat" | "agent";
   },
 ): Promise<{ status: string }> {
   const data = await everosRequest<AddResponse>(config, "/api/v2/memory/add", {
     ...scope(config),
     session_id: args.sessionId,
     messages: args.messages,
-    ...(args.mode ? { mode: args.mode } : {}),
   });
   return { status: data.data.status };
 }
@@ -275,7 +258,6 @@ export async function searchMemories(
 ): Promise<{
   episodes: EverosEpisode[];
   profiles: EverosProfile[];
-  unprocessedMessages: EverosUnprocessedMessage[];
 }> {
   const data = await everosRequest<SearchResponse>(
     config,
@@ -296,14 +278,33 @@ export async function searchMemories(
   return {
     episodes: wantEpisodes ? (data.data.episodes ?? []) : [],
     profiles: wantProfiles ? (data.data.profiles ?? []) : [],
-    unprocessedMessages: data.data.unprocessed_messages ?? [],
+  };
+}
+
+/** Page through a user's stored episodes, newest first. */
+export async function getEpisodes(
+  config: EverosConfig,
+  args: { userId: string; page?: number; pageSize?: number },
+): Promise<{ episodes: EverosEpisode[]; totalCount: number }> {
+  const data = await everosRequest<GetResponse>(config, "/api/v2/memory/get", {
+    ...scope(config),
+    memory_type: "episode",
+    user_id: args.userId,
+    page: args.page ?? 1,
+    page_size: args.pageSize ?? 25,
+    sort_by: "timestamp",
+    sort_order: "desc",
+  });
+  return {
+    episodes: data.data.episodes ?? [],
+    totalCount: data.data.total_count ?? 0,
   };
 }
 
 /** Fetch a user's profile / semantic memory. */
 export async function getProfileMemory(
   config: EverosConfig,
-  args: { userId: string; pageSize?: number },
+  args: { userId: string },
 ): Promise<EverosProfile[]> {
   const data = await everosRequest<GetResponse>(
     config,
@@ -313,7 +314,7 @@ export async function getProfileMemory(
       memory_type: "profile",
       user_id: args.userId,
       page: 1,
-      page_size: args.pageSize ?? 20,
+      page_size: 20,
     },
   );
   return data.data.profiles ?? [];

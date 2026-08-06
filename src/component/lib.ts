@@ -1,6 +1,4 @@
 import { v } from "convex/values";
-import { paginationOptsValidator } from "convex/server";
-import { paginator } from "convex-helpers/server/pagination";
 import {
   action,
   internalAction,
@@ -11,9 +9,10 @@ import {
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import schema, { kind } from "./schema.js";
+import { kind } from "./schema.js";
 import {
   addMemories,
+  getEpisodes,
   deleteSessionMemories,
   deleteUserMemories,
   flushExtraction,
@@ -22,6 +21,7 @@ import {
   normalizeTimestamp,
   searchMemories,
   type EverosConfig,
+  type EverosEpisode,
 } from "./everos.js";
 
 const MAX_ATTEMPTS = 5;
@@ -34,19 +34,6 @@ function effectiveSessionId(userId: string, sessionId?: string): string {
   const sid = sessionId ?? `user:${userId}`;
   return sid.length <= 128 ? sid : sid.slice(-128);
 }
-
-// Full-document validator for the local memories index (ids become strings at
-// the component boundary).
-const memoryDoc = v.object({
-  _id: v.string(),
-  _creationTime: v.number(),
-  userId: v.string(),
-  everosMemoryId: v.string(),
-  kind,
-  preview: v.string(),
-  sessionId: v.optional(v.string()),
-  syncedAt: v.number(),
-});
 
 // A single verifiable fact underlying a memory (for auditability / traceability).
 const atomicFact = v.object({
@@ -92,11 +79,14 @@ export const remember = mutation({
     content: v.string(),
     role: v.optional(v.union(v.literal("user"), v.literal("assistant"))),
     sessionId: v.optional(v.string()),
+    // When this was actually said. Without it the timestamp is synthesized at
+    // flush time, which a retry can push minutes past the real moment — and
+    // "when was this said" is half of what makes a memory auditable.
+    timestamp: v.optional(v.number()),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
     appId: v.optional(v.string()),
     projectId: v.optional(v.string()),
-    eager: v.optional(v.boolean()),
   },
   returns: v.object({ pendingId: v.string() }),
   handler: async (ctx, args) => {
@@ -112,13 +102,9 @@ export const remember = mutation({
       sessionId: args.sessionId,
       appId: args.appId,
       projectId: args.projectId,
+      saidAt: args.timestamp,
       status: "queued",
       attempts: 0,
-    });
-    await ctx.db.insert("usage", {
-      userId: args.userId,
-      op: "remember",
-      ts: Date.now(),
     });
     // Mutations can't call external APIs — hand off to a scheduled action.
     await ctx.scheduler.runAfter(0, internal.lib.flush, {
@@ -126,9 +112,64 @@ export const remember = mutation({
       baseUrl: args.baseUrl,
       appId: args.appId,
       projectId: args.projectId,
-      eager: args.eager,
     });
     return { pendingId };
+  },
+});
+
+// ===========================================================================
+// rememberMessages (mutation) — a whole turn in one call
+// ===========================================================================
+
+// An agent turn is a user message and the assistant's reply. Calling
+// `remember` twice enqueues two rows and schedules two flushes, and it is the
+// reason the README's own example only ever stores the user's half: the
+// assistant's answer, where the commitments live, never reaches memory.
+export const rememberMessages = mutation({
+  args: {
+    userId: v.string(),
+    messages: v.array(
+      v.object({
+        content: v.string(),
+        role: v.optional(v.union(v.literal("user"), v.literal("assistant"))),
+        timestamp: v.optional(v.number()),
+      }),
+    ),
+    sessionId: v.optional(v.string()),
+    apiKey: v.string(),
+    baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
+  },
+  returns: v.object({ pendingIds: v.array(v.string()) }),
+  handler: async (ctx, args) => {
+    const pendingIds: string[] = [];
+    for (const message of args.messages) {
+      if (message.content.trim() === "") continue;
+      const id = await ctx.db.insert("pending", {
+        userId: args.userId,
+        content: message.content,
+        role: message.role ?? "user",
+        sessionId: args.sessionId,
+        appId: args.appId,
+        projectId: args.projectId,
+        saidAt: message.timestamp,
+        status: "queued",
+        attempts: 0,
+      });
+      pendingIds.push(id);
+    }
+    if (pendingIds.length === 0) {
+      throw new Error("rememberMessages() called with no non-empty messages.");
+    }
+    // One flush for the whole turn, not one per message.
+    await ctx.scheduler.runAfter(0, internal.lib.flush, {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    });
+    return { pendingIds };
   },
 });
 
@@ -162,7 +203,6 @@ export const claimQueued = internalMutation({
     baseUrl: v.optional(v.string()),
     appId: v.optional(v.string()),
     projectId: v.optional(v.string()),
-    eager: v.optional(v.boolean()),
   },
   returns: v.object({
     rows: v.array(
@@ -174,6 +214,7 @@ export const claimQueued = internalMutation({
         sessionId: v.optional(v.string()),
         appId: v.optional(v.string()),
         projectId: v.optional(v.string()),
+        saidAt: v.optional(v.number()),
         attempts: v.number(),
       }),
     ),
@@ -195,6 +236,7 @@ export const claimQueued = internalMutation({
       sessionId?: string;
       appId?: string;
       projectId?: string;
+      saidAt?: number;
       attempts: number;
     }>;
     sweepId: Id<"_scheduled_functions"> | null;
@@ -232,15 +274,6 @@ export const claimQueued = internalMutation({
         rows.push({ ...r, attempts });
       }
     }
-    // Opportunistic cleanup of rows left behind by 0.1, which marked a row
-    // `extracted` instead of deleting it. Bounded so a large backlog is
-    // cleared over several flushes rather than in one oversized transaction.
-    const legacy = await ctx.db
-      .query("pending")
-      .withIndex("by_status", (q) => q.eq("status", "extracted"))
-      .take(50);
-    for (const r of legacy) await ctx.db.delete(r._id);
-
     const claimed = [];
     for (const r of rows) {
       // `attempts` is carried from the reclaim branch above. Patching only
@@ -259,6 +292,7 @@ export const claimQueued = internalMutation({
         sessionId: r.sessionId,
         appId: r.appId,
         projectId: r.projectId,
+        saidAt: r.saidAt,
         attempts: r.attempts,
       });
     }
@@ -279,7 +313,6 @@ export const claimQueued = internalMutation({
           baseUrl: args.baseUrl,
           appId: args.appId,
           projectId: args.projectId,
-          eager: args.eager,
         },
       );
     }
@@ -383,7 +416,6 @@ export const markExtracted = internalMutation({
   },
 });
 
-
 // Record why content is ingested but still not searchable, so it is
 // reportable through `getPendingStatus` instead of failing silently.
 export const markExtractionStalled = internalMutation({
@@ -406,11 +438,6 @@ export const flush = internalAction({
     baseUrl: v.optional(v.string()),
     appId: v.optional(v.string()),
     projectId: v.optional(v.string()),
-    // When true (default), ask EverOS to extract immediately after ingest so
-    // content becomes recallable right away. EverOS Cloud does not extract on
-    // a schedule of its own, so without this ingested messages sit in the
-    // accumulation buffer indefinitely.
-    eager: v.optional(v.boolean()),
   },
   returns: v.object({ sent: v.number(), failed: v.number() }),
   handler: async (ctx, args) => {
@@ -427,7 +454,6 @@ export const flush = internalAction({
         baseUrl: args.baseUrl,
         appId: args.appId,
         projectId: args.projectId,
-        eager: args.eager,
       },
     );
     let sent = 0;
@@ -469,8 +495,9 @@ export const flush = internalAction({
           sessionId,
           messages: group.map((item, i) => ({
             role: item.role,
-            // Preserve ordering within the batch.
-            timestamp: Date.now() - (group.length - i),
+            // The caller's timestamp when given; otherwise now, offset to
+            // preserve ordering within the batch.
+            timestamp: item.saidAt ?? Date.now() - (group.length - i),
             content: item.content,
             // v2 attributes memories via per-message sender_id — without a
             // user-id sender on user messages, nothing is extracted for them.
@@ -479,24 +506,22 @@ export const flush = internalAction({
         });
         await ctx.runMutation(internal.lib.markSent, { ids });
         sent += group.length;
-        if (args.eager !== false) {
-          // Don't flush inline: an ingest takes ~10s to land in the
-          // accumulation buffer server-side, and a flush before that is a
-          // silent no-op. Schedule past the landing window instead.
-          await ctx.scheduler.runAfter(
-            EXTRACTION_DELAY_MS,
-            internal.lib.runExtraction,
-            {
-              apiKey: args.apiKey,
-              baseUrl: args.baseUrl,
-              appId: groupConfig.appId,
-              projectId: groupConfig.projectId,
-              sessionId,
-              userId,
-              ids,
-            },
-          );
-        }
+        // Don't flush inline: an ingest takes ~10s to land in the
+        // accumulation buffer server-side, and a flush before that is a
+        // silent no-op. Schedule past the landing window instead.
+        await ctx.scheduler.runAfter(
+          EXTRACTION_DELAY_MS,
+          internal.lib.runExtraction,
+          {
+            apiKey: args.apiKey,
+            baseUrl: args.baseUrl,
+            appId: groupConfig.appId,
+            projectId: groupConfig.projectId,
+            sessionId,
+            userId,
+            ids,
+          },
+        );
       } catch (e) {
         failed += group.length;
         const attempts = await ctx.runMutation(internal.lib.markFailed, {
@@ -517,7 +542,6 @@ export const flush = internalAction({
         baseUrl: args.baseUrl,
         appId: args.appId,
         projectId: args.projectId,
-        eager: args.eager,
       });
     }
 
@@ -611,59 +635,6 @@ export const runExtraction = internalAction({
 // recall (action) — query EverOS retrieval API
 // ===========================================================================
 
-export const upsertMemory = internalMutation({
-  args: {
-    userId: v.string(),
-    everosMemoryId: v.string(),
-    kind,
-    preview: v.string(),
-    sessionId: v.optional(v.string()),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("memories")
-      .withIndex("by_user_and_everosMemoryId", (q) =>
-        q.eq("userId", args.userId).eq("everosMemoryId", args.everosMemoryId),
-      )
-      .unique();
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        kind: args.kind,
-        preview: args.preview,
-        sessionId: args.sessionId,
-        syncedAt: Date.now(),
-      });
-    } else {
-      await ctx.db.insert("memories", {
-        userId: args.userId,
-        everosMemoryId: args.everosMemoryId,
-        kind: args.kind,
-        preview: args.preview,
-        sessionId: args.sessionId,
-        syncedAt: Date.now(),
-      });
-    }
-    return null;
-  },
-});
-
-export const logUsage = internalMutation({
-  args: {
-    userId: v.string(),
-    op: v.union(v.literal("remember"), v.literal("recall")),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    await ctx.db.insert("usage", {
-      userId: args.userId,
-      op: args.op,
-      ts: Date.now(),
-    });
-    return null;
-  },
-});
-
 // Extraction lands within a couple of minutes; anything older than this in
 // queued/sent state is a stalled pipeline (e.g. an action killed between the
 // EverOS flush and markExtracted) whose content was likely extracted anyway —
@@ -686,7 +657,6 @@ export const getUnextracted = internalQuery({
       _creationTime: v.number(),
       content: v.string(),
       sessionId: v.optional(v.string()),
-      lastError: v.optional(v.string()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -715,7 +685,6 @@ export const getUnextracted = internalQuery({
         _creationTime: r._creationTime,
         content: r.content,
         sessionId: r.sessionId,
-        lastError: r.lastError,
       }));
   },
 });
@@ -733,6 +702,30 @@ function profileItemToText(item: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+// Live API quirks handled here once: optional strings come back as null where
+// validators want undefined, score is null when unscored, and timestamps are
+// ISO strings.
+function episodeToMemory(ep: EverosEpisode, userId: string) {
+  return {
+    everosMemoryId: ep.id,
+    userId,
+    kind: ep.type ? memoryTypeToKind(ep.type) : ("episodic" as const),
+    text: ep.episode ?? ep.summary ?? ep.subject ?? "",
+    summary: ep.summary ?? undefined,
+    score: ep.score ?? undefined,
+    timestamp: normalizeTimestamp(ep.timestamp),
+    sessionId: ep.session_id ?? undefined,
+    atomicFacts: (ep.atomic_facts ?? [])
+      .filter((f) => f.content)
+      .map((f) => ({
+        text: f.content as string,
+        score: f.score ?? undefined,
+        timestamp: normalizeTimestamp(f.timestamp),
+        sessionId: f.session_id ?? undefined,
+      })),
+  };
 }
 
 export const recall = action({
@@ -783,27 +776,7 @@ export const recall = action({
     }> = [];
 
     for (const ep of episodes) {
-      const text = ep.episode ?? ep.summary ?? ep.subject ?? "";
-      results.push({
-        everosMemoryId: ep.id,
-        userId: args.userId,
-        kind: ep.type ? memoryTypeToKind(ep.type) : "episodic",
-        text,
-        // Live API quirks: optional strings come back as null (validators want
-        // undefined), score is null when unscored, timestamp is an ISO string.
-        summary: ep.summary ?? undefined,
-        score: ep.score ?? undefined,
-        timestamp: normalizeTimestamp(ep.timestamp),
-        sessionId: ep.session_id ?? undefined,
-        atomicFacts: (ep.atomic_facts ?? [])
-          .filter((f) => f.content)
-          .map((f) => ({
-            text: f.content as string,
-            score: f.score ?? undefined,
-            timestamp: normalizeTimestamp(f.timestamp),
-            sessionId: f.session_id ?? undefined,
-          })),
-      });
+      results.push(episodeToMemory(ep, args.userId));
     }
     for (const p of profiles) {
       const parts = [
@@ -823,20 +796,6 @@ export const recall = action({
       });
     }
 
-    // Hydrate the local reactive index and log usage.
-    for (const r of results) {
-      await ctx.runMutation(internal.lib.upsertMemory, {
-        userId: r.userId,
-        everosMemoryId: r.everosMemoryId,
-        kind: r.kind,
-        preview: r.text.slice(0, 280),
-        sessionId: r.sessionId,
-      });
-    }
-    await ctx.runMutation(internal.lib.logUsage, {
-      userId: args.userId,
-      op: "recall",
-    });
 
     // Read-your-writes: EverOS extraction is asynchronous, so content saved
     // moments ago isn't searchable yet. Append it from the local queue
@@ -847,7 +806,10 @@ export const recall = action({
       // ranked matches in an agent's context window.
       const recent = await ctx.runQuery(internal.lib.getUnextracted, {
         userId: args.userId,
-        limit: Math.min(args.topK ?? DEFAULT_PENDING_MERGE_LIMIT, DEFAULT_PENDING_MERGE_LIMIT),
+        limit: Math.min(
+          args.topK ?? DEFAULT_PENDING_MERGE_LIMIT,
+          DEFAULT_PENDING_MERGE_LIMIT,
+        ),
       });
       for (const r of recent) {
         results.push({
@@ -910,19 +872,12 @@ export const clearSessionLocal = internalMutation({
     // A page at a time, like clearUserLocal: collecting a heavy user's whole
     // history in one transaction makes deletion fail for exactly the users
     // most likely to ask for it.
-    let budget = DELETE_PAGE;
-    const memories = await ctx.db
-      .query("memories")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .take(budget + 1);
-    for (const row of memories.slice(0, budget)) {
-      if (row.sessionId === args.sessionId) await ctx.db.delete(row._id);
-    }
-    budget -= Math.min(memories.length, budget);
-    if (budget <= 0) return true;
+    const budget = DELETE_PAGE;
+    // by_user_and_status, keyed on its userId prefix: these scans are
+    // order-insensitive, so a second narrower index would be pure write cost.
     const pending = await ctx.db
       .query("pending")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user_and_status", (q) => q.eq("userId", args.userId))
       .take(budget + 1);
     for (const row of pending.slice(0, budget)) {
       if (effectiveSessionId(row.userId, row.sessionId) === args.sessionId) {
@@ -980,10 +935,10 @@ export const clearUserLocal = internalMutation({
   returns: v.boolean(),
   handler: async (ctx, args) => {
     let budget = DELETE_PAGE;
-    for (const table of ["memories", "pending", "usage"] as const) {
+    for (const table of ["pending"] as const) {
       const rows = await ctx.db
         .query(table)
-        .withIndex("by_user", (q) => q.eq("userId", args.userId))
+        .withIndex("by_user_and_status", (q) => q.eq("userId", args.userId))
         .take(budget + 1);
       for (const row of rows.slice(0, budget)) await ctx.db.delete(row._id);
       budget -= Math.min(rows.length, budget);
@@ -1020,6 +975,47 @@ export const forgetUser = action({
       });
     }
     return { deletedCount };
+  },
+});
+
+// ===========================================================================
+// listMemories (action) — page through what EverOS actually holds
+// ===========================================================================
+
+// Backed by EverOS rather than by a local mirror of past recall results: a
+// list that only contains what you happened to search for is not a list of a
+// user's memories, and a "what do you know about me" screen built on one
+// silently omits everything.
+export const listMemories = action({
+  args: {
+    userId: v.string(),
+    page: v.optional(v.number()),
+    pageSize: v.optional(v.number()),
+    apiKey: v.string(),
+    baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
+  },
+  returns: v.object({
+    memories: v.array(recalledMemory),
+    totalCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
+    const { episodes, totalCount } = await getEpisodes(config, {
+      userId: args.userId,
+      page: args.page,
+      pageSize: args.pageSize,
+    });
+    return {
+      memories: episodes.map((ep) => episodeToMemory(ep, args.userId)),
+      totalCount,
+    };
   },
 });
 
@@ -1075,29 +1071,3 @@ export const getPendingStatus = query({
 // listMemories (query) — paginated local index per user
 // ===========================================================================
 
-export const listMemories = query({
-  args: {
-    userId: v.string(),
-    paginationOpts: paginationOptsValidator,
-  },
-  returns: v.object({
-    page: v.array(memoryDoc),
-    isDone: v.boolean(),
-    continueCursor: v.string(),
-    splitCursor: v.optional(v.union(v.string(), v.null())),
-    pageStatus: v.optional(
-      v.union(
-        v.literal("SplitRecommended"),
-        v.literal("SplitRequired"),
-        v.null(),
-      ),
-    ),
-  }),
-  handler: async (ctx, args) => {
-    return await paginator(ctx.db, schema)
-      .query("memories")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .order("desc")
-      .paginate(args.paginationOpts);
-  },
-});

@@ -172,8 +172,9 @@ describe("remember + flush", () => {
         data: { status: "queued", message_count: 1 },
       }),
     });
-    // 0.1 marked a row `extracted` and kept it. Upgrading must neither fail
-    // schema validation nor leave the rows there forever.
+    // Rows written by 0.1: a status and fields this version no longer writes.
+    // Convex validates every existing document on deploy, so an upgrade must
+    // still accept them, and the leftovers must not linger forever.
     await t.run(async (ctx) => {
       await ctx.db.insert("pending", {
         userId: "u1",
@@ -181,6 +182,8 @@ describe("remember + flush", () => {
         role: "user",
         status: "extracted",
         attempts: 0,
+        metadata: { source: "email" },
+        everosTaskId: "task-from-v1",
       });
       await ctx.db.insert("pending", {
         userId: "u1",

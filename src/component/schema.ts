@@ -58,8 +58,13 @@ export default defineSchema({
     // When the row was claimed into `sending`, so a flush that never reported
     // back can be reclaimed instead of stranding the row.
     claimedAt: v.optional(v.number()),
-    // Deprecated: v1 ingest returned a task id; v2 has none. Kept optional so
-    // rows written by earlier versions still validate.
+    // Neither of these is written any more. They are still declared because
+    // Convex validates every existing document against the schema on deploy,
+    // so removing a field that an earlier version wrote turns an upgrade into
+    // a failed deploy for the consuming app.
+    //   metadata:     0.1 accepted and stored it but never sent it anywhere.
+    //   everosTaskId: the v1 ingest API returned a task id; v2 has none.
+    metadata: v.optional(v.record(v.string(), v.any())),
     everosTaskId: v.optional(v.string()),
     lastError: v.optional(v.string()),
   })

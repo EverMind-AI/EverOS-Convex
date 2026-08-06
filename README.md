@@ -50,7 +50,19 @@ npx convex env set EVEROS_API_KEY <your-key>
 npx convex env set EVEROS_BASE_URL https://api.evermind.ai
 ```
 
-The app-side client reads these from `process.env` (you can also pass
+To keep separate memory spaces on one account (staging, a public demo,
+production), give each a namespace:
+
+```ts
+new EverOS(components.everos, { appId: "staging", projectId: "staging" });
+```
+
+Reads, writes and deletes are all scoped to it, so nothing under one namespace
+is searchable or deletable from another. Issuing a second API key does **not**
+do this: keys on the same account share a namespace. `EVEROS_APP_ID` /
+`EVEROS_PROJECT_ID` work too.
+
+The app-side client reads credentials from `process.env` (you can also pass
 `{ apiKey, baseUrl }` to `new EverOS(...)`). Per Convex component authoring
 best practice, secrets are resolved in your app and threaded into the component
 — they are never read inside the component itself.

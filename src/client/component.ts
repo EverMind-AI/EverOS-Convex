@@ -91,6 +91,8 @@ export type ComponentApi<
         sessionId?: string;
         apiKey: string;
         baseUrl?: string;
+        appId?: string;
+        projectId?: string;
         eager?: boolean;
       },
       { pendingId: string },
@@ -107,6 +109,8 @@ export type ComponentApi<
         includeRecent?: boolean;
         apiKey: string;
         baseUrl?: string;
+        appId?: string;
+        projectId?: string;
       },
       RecalledMemory[],
       Name
@@ -114,7 +118,13 @@ export type ComponentApi<
     getProfile: FunctionReference<
       "action",
       "internal",
-      { userId: string; apiKey: string; baseUrl?: string },
+      {
+        userId: string;
+        apiKey: string;
+        baseUrl?: string;
+        appId?: string;
+        projectId?: string;
+      },
       MemoryProfile[],
       Name
     >;
@@ -126,6 +136,8 @@ export type ComponentApi<
         sessionId: string;
         apiKey: string;
         baseUrl?: string;
+        appId?: string;
+        projectId?: string;
       },
       { deletedCount: number },
       Name
@@ -133,7 +145,13 @@ export type ComponentApi<
     forgetUser: FunctionReference<
       "action",
       "internal",
-      { userId: string; apiKey: string; baseUrl?: string },
+      {
+        userId: string;
+        apiKey: string;
+        baseUrl?: string;
+        appId?: string;
+        projectId?: string;
+      },
       { deletedCount: number },
       Name
     >;

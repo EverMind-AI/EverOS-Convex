@@ -239,6 +239,62 @@ describe("remember + flush", () => {
   });
 });
 
+describe("namespace scoping", () => {
+  test("sends appId/projectId on every call so one account can hold several spaces", async () => {
+    const t = convexTest(schema, modules);
+    const bodies: Record<string, any> = {};
+    mockEveros({
+      "/api/v2/memory/add": (body) => {
+        bodies.add = body;
+        return { data: { status: "queued", message_count: 1 } };
+      },
+      "/api/v2/memory/search": (body) => {
+        bodies.search = body;
+        return searchResponse();
+      },
+      "/api/v2/memory/delete": (body) => {
+        bodies.delete = body;
+        return { data: { filters: ["user_id"], count: 0 } };
+      },
+    });
+    const SCOPED = { ...CREDS, appId: "demo", projectId: "demo" };
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "scoped write",
+        role: "user",
+        status: "queued",
+        attempts: 0,
+      });
+    });
+    await t.action(internal.lib.flush, { eager: false, ...SCOPED });
+    await t.action(api.lib.recall, { userId: "u1", query: "q", ...SCOPED });
+    await t.action(api.lib.forgetUser, { userId: "u1", ...SCOPED });
+
+    // Without these, a demo and production sharing one account read and
+    // delete each other's memories.
+    for (const key of ["add", "search", "delete"]) {
+      expect(bodies[key].app_id).toBe("demo");
+      expect(bodies[key].project_id).toBe("demo");
+    }
+  });
+
+  test("omits them entirely when unset, so EverOS applies its own default", async () => {
+    const t = convexTest(schema, modules);
+    let body: any;
+    mockEveros({
+      "/api/v2/memory/search": (b) => {
+        body = b;
+        return searchResponse();
+      },
+    });
+    await t.action(api.lib.recall, { userId: "u1", query: "q", ...CREDS });
+    expect(body.app_id).toBeUndefined();
+    expect(body.project_id).toBeUndefined();
+  });
+});
+
 describe("recall", () => {
   test("searches EverOS and hydrates the local index", async () => {
     const t = convexTest(schema, modules);

@@ -93,6 +93,8 @@ export const remember = mutation({
     sessionId: v.optional(v.string()),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
     eager: v.optional(v.boolean()),
   },
   returns: v.object({ pendingId: v.string() }),
@@ -119,6 +121,8 @@ export const remember = mutation({
     await ctx.scheduler.runAfter(0, internal.lib.flush, {
       apiKey: args.apiKey,
       baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
       eager: args.eager,
     });
     return { pendingId };
@@ -279,6 +283,8 @@ export const flush = internalAction({
   args: {
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
     // When true (default), ask EverOS to extract immediately after ingest so
     // content becomes recallable right away. EverOS Cloud does not extract on
     // a schedule of its own, so without this ingested messages sit in the
@@ -287,7 +293,12 @@ export const flush = internalAction({
   },
   returns: v.object({ sent: v.number(), failed: v.number() }),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     const claimed = await ctx.runMutation(internal.lib.claimQueued, {});
     let sent = 0;
     let failed = 0;
@@ -329,7 +340,14 @@ export const flush = internalAction({
           await ctx.scheduler.runAfter(
             EXTRACTION_DELAY_MS,
             internal.lib.runExtraction,
-            { apiKey: args.apiKey, baseUrl: args.baseUrl, sessionId, ids },
+            {
+              apiKey: args.apiKey,
+              baseUrl: args.baseUrl,
+              appId: args.appId,
+              projectId: args.projectId,
+              sessionId,
+              ids,
+            },
           );
         }
       } catch (e) {
@@ -350,6 +368,8 @@ export const flush = internalAction({
       await ctx.scheduler.runAfter(delay, internal.lib.flush, {
         apiKey: args.apiKey,
         baseUrl: args.baseUrl,
+        appId: args.appId,
+        projectId: args.projectId,
         eager: args.eager,
       });
     }
@@ -367,6 +387,8 @@ export const runExtraction = internalAction({
   args: {
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
     // Extraction buffers are keyed by session on the EverOS side.
     sessionId: v.string(),
     // The rows this extraction covers, so only they are retired.
@@ -375,7 +397,12 @@ export const runExtraction = internalAction({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     const attempt = args.attempt ?? 0;
     let extracted = false;
     let lastError: string | undefined;
@@ -551,10 +578,17 @@ export const recall = action({
     includeRecent: v.optional(v.boolean()),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
   },
   returns: v.array(recalledMemory),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     const { episodes, profiles } = await searchMemories(config, {
       userId: args.userId,
       query: args.query,
@@ -673,10 +707,17 @@ export const getProfile = action({
     userId: v.string(),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
   },
   returns: v.array(profileResult),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     const profiles = await getProfileMemory(config, { userId: args.userId });
     return profiles.map((p) => ({
       everosMemoryId: p.id,
@@ -724,10 +765,17 @@ export const forgetSession = action({
     sessionId: v.string(),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
   },
   returns: v.object({ deletedCount: v.number() }),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     // Ingest rewrites the session id (a sessionless remember lands in a
     // per-user session, and long ids are truncated), so deleting under the
     // caller's raw id would silently match nothing on both sides.
@@ -773,10 +821,17 @@ export const forgetUser = action({
     userId: v.string(),
     apiKey: v.string(),
     baseUrl: v.optional(v.string()),
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
   },
   returns: v.object({ deletedCount: v.number() }),
   handler: async (ctx, args) => {
-    const config: EverosConfig = { apiKey: args.apiKey, baseUrl: args.baseUrl };
+    const config: EverosConfig = {
+      apiKey: args.apiKey,
+      baseUrl: args.baseUrl,
+      appId: args.appId,
+      projectId: args.projectId,
+    };
     const { deletedCount } = await deleteUserMemories(config, {
       userId: args.userId,
     });

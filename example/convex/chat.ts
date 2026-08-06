@@ -35,7 +35,15 @@ const MODEL_TIER2 =
 
 // Long-term customer memory, backed by EverOS Cloud. The customerId is
 // generated per-browser on the frontend and passed into every function.
-export const everos = new EverOS(components.everos);
+//
+// The demo runs in its own namespace on the EverOS account. Anyone can type
+// into a public demo, so its memories must not be searchable or deletable
+// from whatever else that account holds. Issuing a second API key does not do
+// this: keys on one account share a namespace.
+export const everos = new EverOS(components.everos, {
+  appId: "convex-demo",
+  projectId: "convex-demo",
+});
 
 // ---------------------------------------------------------------------------
 // The two support agents. They share NO chat history — a tier-2 escalation

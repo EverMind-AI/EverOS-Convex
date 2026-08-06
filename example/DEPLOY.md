@@ -24,8 +24,15 @@ npx convex env set OPENROUTER_API_KEY sk-or-... --prod
 npx convex env set EVEROS_BASE_URL https://api.evermind.ai --prod
 ```
 
-Use a **separate EverOS key for the demo**, not a personal one. Demo traffic is
-public and its memories should be disposable.
+The demo runs in its own EverOS namespace (`appId`/`projectId` =
+`convex-demo`, set in `convex/chat.ts`), so nothing strangers type into it is
+searchable or deletable from the rest of the account.
+
+A separate API key does **not** provide that isolation on its own: keys issued
+on one account share a namespace, so a demo key still reads and deletes
+everything the account holds. Verified against production. Use a demo-only key
+anyway to bound what a leaked key grants, but rely on the namespace for
+isolation.
 
 ## 2. Frontend
 

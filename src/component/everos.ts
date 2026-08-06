@@ -22,7 +22,24 @@ export function memoryTypeToKind(
 export type EverosConfig = {
   apiKey: string;
   baseUrl?: string;
+  /**
+   * Namespace within the EverOS account. One account can hold several
+   * independent memory spaces, and every operation is scoped to one: content
+   * written under one `appId` is not searchable or deletable from another.
+   * Use it to keep staging, demos and production apart without needing a
+   * separate account for each. Both default to EverOS's own `"default"`.
+   */
+  appId?: string;
+  projectId?: string;
 };
+
+/** The scope fields every v2 endpoint accepts, omitted when unset. */
+function scope(config: EverosConfig): Record<string, string> {
+  return {
+    ...(config.appId ? { app_id: config.appId } : {}),
+    ...(config.projectId ? { project_id: config.projectId } : {}),
+  };
+}
 
 async function everosRequest<T>(
   config: EverosConfig,
@@ -199,6 +216,7 @@ export async function addMemories(
   },
 ): Promise<{ status: string }> {
   const data = await everosRequest<AddResponse>(config, "/api/v2/memory/add", {
+    ...scope(config),
     session_id: args.sessionId,
     messages: args.messages,
     ...(args.mode ? { mode: args.mode } : {}),
@@ -220,7 +238,7 @@ export async function flushExtraction(
   const data = await everosRequest<{ data: { status: string } }>(
     config,
     "/api/v2/memory/flush",
-    { session_id: args.sessionId },
+    { ...scope(config), session_id: args.sessionId },
   );
   return { status: data.data.status };
 }
@@ -243,6 +261,7 @@ export async function searchMemories(
     config,
     "/api/v2/memory/search",
     {
+      ...scope(config),
       query: args.query,
       user_id: args.userId,
       method: "hybrid",
@@ -270,6 +289,7 @@ export async function getProfileMemory(
     config,
     "/api/v2/memory/get",
     {
+      ...scope(config),
       memory_type: "profile",
       user_id: args.userId,
       page: 1,
@@ -290,7 +310,7 @@ export async function deleteSessionMemories(
   const data = await everosRequest<DeleteResponse>(
     config,
     "/api/v2/memory/delete",
-    { session_id: args.sessionId },
+    { ...scope(config), session_id: args.sessionId },
   );
   return { deletedCount: data.data.count ?? 0 };
 }
@@ -303,7 +323,7 @@ export async function deleteUserMemories(
   const data = await everosRequest<DeleteResponse>(
     config,
     "/api/v2/memory/delete",
-    { user_id: args.userId },
+    { ...scope(config), user_id: args.userId },
   );
   return { deletedCount: data.data.count ?? 0 };
 }

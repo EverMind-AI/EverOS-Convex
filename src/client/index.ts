@@ -34,6 +34,16 @@ export type EverOSOptions = {
   /** EverOS Cloud base URL. Defaults to `process.env.EVEROS_BASE_URL` or the public cloud. */
   baseUrl?: string;
   /**
+   * Namespace within your EverOS account. One account holds several
+   * independent memory spaces, and every read, write and delete is scoped to
+   * one: content written under one `appId` is not searchable or deletable
+   * from another. Use it to keep staging, a public demo and production apart
+   * on a single account. Defaults to `EVEROS_APP_ID` / `EVEROS_PROJECT_ID`,
+   * then to EverOS's own `"default"`.
+   */
+  appId?: string;
+  projectId?: string;
+  /**
    * When true (the default), the component drives EverOS extraction after each
    * ingest so remembered content becomes searchable.
    *
@@ -63,6 +73,8 @@ type RunActionCtx = { runAction: (...args: any[]) => Promise<any> };
 export class EverOS {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly appId?: string;
+  private readonly projectId?: string;
   private readonly eagerExtraction: boolean;
 
   constructor(
@@ -72,6 +84,8 @@ export class EverOS {
     this.apiKey = options.apiKey ?? process.env.EVEROS_API_KEY ?? "";
     this.baseUrl =
       options.baseUrl ?? process.env.EVEROS_BASE_URL ?? DEFAULT_BASE_URL;
+    this.appId = options.appId ?? process.env.EVEROS_APP_ID;
+    this.projectId = options.projectId ?? process.env.EVEROS_PROJECT_ID;
     this.eagerExtraction = options.eagerExtraction ?? true;
   }
 
@@ -87,7 +101,12 @@ export class EverOS {
           "Get a free key at https://evermind.ai.",
       );
     }
-    return { apiKey: this.apiKey, baseUrl: this.baseUrl };
+    return {
+      apiKey: this.apiKey,
+      baseUrl: this.baseUrl,
+      appId: this.appId,
+      projectId: this.projectId,
+    };
   }
 
   /** Enqueue content to be remembered for a user. Flushed to EverOS async. */

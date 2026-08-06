@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import {
-  action,
+  internalAction,
   internalMutation,
   internalQuery,
 } from "./_generated/server.js";
@@ -69,7 +69,11 @@ export const wipeAppRows = internalMutation({
   },
 });
 
-export const clearAll = action({
+// internalAction, not action: this wipes every demo conversation and every
+// visitor's EverOS memories. A public action on a deployment whose URL ships
+// in the frontend bundle is callable by anyone with a browser console.
+// Operators still reach it with `npx convex run demo:clearAll --prod`.
+export const clearAll = internalAction({
   args: { customerId: v.optional(v.string()) },
   returns: v.object({
     conversationsDeleted: v.number(),

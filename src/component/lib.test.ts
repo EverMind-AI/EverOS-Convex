@@ -84,9 +84,10 @@ describe("remember + flush", () => {
 
     // One ingest POST + one eager-extraction flush POST.
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // The flush reported "extracted", so the row left the read-your-writes set.
+    // EverOS confirmed extraction, so the queue row is retired entirely
+    // rather than accumulating for the life of the app.
     const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
-    expect(row?.status).toBe("extracted");
+    expect(row).toBeNull();
 
     // Usage was logged.
     const usage = await t.run(async (ctx) =>
@@ -125,7 +126,7 @@ describe("remember + flush", () => {
 
     expect(flushCalls).toBe(2);
     const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
-    expect(row?.status).toBe("extracted");
+    expect(row).toBeNull();
   });
 
   test("rejects empty content with a clear error", async () => {
@@ -135,7 +136,7 @@ describe("remember + flush", () => {
     ).rejects.toThrow(/empty content/);
   });
 
-  test("retries on failure and eventually marks failed", async () => {
+  test("retries a failed ingest on its own and gives up after MAX_ATTEMPTS", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
     // Force fetch to return a server error.
@@ -149,13 +150,59 @@ describe("remember + flush", () => {
       content: "will fail",
       ...CREDS,
     });
+    // A requeued row must not wait for the next remember() — the flush
+    // schedules its own retry, so draining the scheduler exhausts them.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
-    // One attempt made; still queued for retry (attempts < MAX_ATTEMPTS).
-    expect(row?.attempts).toBe(1);
-    expect(row?.status).toBe("queued");
+    expect(row?.attempts).toBe(5);
+    expect(row?.status).toBe("failed");
     expect(row?.lastError).toContain("500");
+
+    // And the failure is reportable rather than silent.
+    const status = await t.query(api.lib.getPendingStatus, { userId: "u1" });
+    expect(status.failed).toBe(1);
+    expect(status.lastError).toContain("500");
+  });
+
+  test("concurrent flushes never ingest the same row twice", async () => {
+    const t = convexTest(schema, modules);
+    const adds: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init: any) => {
+        const path = new URL(url.toString()).pathname;
+        if (path === "/api/v2/memory/add") {
+          adds.push(JSON.parse(init.body));
+          // Hold the request open so the second flush overlaps this one.
+          await new Promise((r) => setTimeout(r, 50));
+          return new Response(
+            JSON.stringify({ data: { status: "queued", message_count: 1 } }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ data: { status: "extracted" } }), {
+          status: 200,
+        });
+      }),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "only once please",
+        role: "user",
+        status: "queued",
+        attempts: 0,
+      });
+    });
+
+    await Promise.all([
+      t.action(internal.lib.flush, { eager: false, ...CREDS }),
+      t.action(internal.lib.flush, { eager: false, ...CREDS }),
+    ]);
+
+    const sent = adds.flatMap((b) => b.messages.map((m: any) => m.content));
+    expect(sent).toEqual(["only once please"]);
   });
 });
 
@@ -304,13 +351,13 @@ describe("recall", () => {
         status: "sent",
         attempts: 0,
       });
-      // Extracted rows are covered by real memories — excluded.
+      // A permanently failed row is not "recent content" either.
       await ctx.db.insert("pending", {
         userId: "u1",
         content: "old news",
         role: "user",
-        status: "extracted",
-        attempts: 0,
+        status: "failed",
+        attempts: 5,
       });
     });
 
@@ -332,6 +379,36 @@ describe("recall", () => {
       ...CREDS,
     });
     expect(strict).toHaveLength(0);
+  });
+
+  test("surfaces the newest content, not the oldest backlog", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({ "/api/v2/memory/search": () => searchResponse() });
+    // More unextracted rows than the merge returns. An ascending scan that
+    // slices the head would hand back the oldest ones and drop the thing the
+    // user just said, which is the entire point of the merge.
+    await t.run(async (ctx) => {
+      for (let i = 1; i <= 30; i++) {
+        await ctx.db.insert("pending", {
+          userId: "u1",
+          content: `note ${i}`,
+          role: "user",
+          status: "sent",
+          attempts: 0,
+        });
+      }
+    });
+
+    const results = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "note 30",
+      ...CREDS,
+    });
+    const texts = results.map((r) => r.text);
+    expect(texts).toContain("note 30");
+    expect(texts).not.toContain("note 1");
+    // Bounded so unranked rows cannot crowd out ranked results in a prompt.
+    expect(results.length).toBeLessThanOrEqual(5);
   });
 
   test("stops merging stalled rows after the max age", async () => {

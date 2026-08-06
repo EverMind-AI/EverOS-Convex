@@ -5,7 +5,7 @@ import type {
 } from "convex/server";
 
 /** App-facing memory kind. */
-export type MemoryKind = "episodic" | "semantic" | "profile";
+export type MemoryKind = "episodic" | "profile";
 
 /**
  * A single verifiable fact underlying a memory — the drill-down layer beneath
@@ -44,6 +44,22 @@ export type MemoryProfile = {
   implicitTraits: unknown[];
 };
 
+/**
+ * How much of a user's remembered content has not reached EverOS yet, and why
+ * if something is stuck. Ingest and extraction run after `remember` returns,
+ * so this is the only way to tell a slow extraction from a broken one.
+ */
+export type PendingStatus = {
+  /** Ingested or queued, not yet extracted. Counts down to 0 normally. */
+  unextracted: number;
+  /** Gave up after repeated ingest failures. Should stay 0. */
+  failed: number;
+  /** True when there were more rows than the query counted. */
+  capped: boolean;
+  /** Most recent failure message, e.g. a rejected API key. */
+  lastError?: string;
+};
+
 export type MemoryDoc = {
   _id: string;
   _creationTime: number;
@@ -73,7 +89,6 @@ export type ComponentApi<
         content: string;
         role?: "user" | "assistant";
         sessionId?: string;
-        metadata?: Record<string, unknown>;
         apiKey: string;
         baseUrl?: string;
         eager?: boolean;
@@ -120,6 +135,13 @@ export type ComponentApi<
       "internal",
       { userId: string; apiKey: string; baseUrl?: string },
       { deletedCount: number },
+      Name
+    >;
+    getPendingStatus: FunctionReference<
+      "query",
+      "internal",
+      { userId: string; limit?: number },
+      PendingStatus,
       Name
     >;
     listMemories: FunctionReference<

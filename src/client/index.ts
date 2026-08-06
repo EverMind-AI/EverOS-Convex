@@ -6,6 +6,7 @@ import type {
   MemoryDoc,
   MemoryKind,
   MemoryProfile,
+  PendingStatus,
   RecalledMemory,
 } from "./component.js";
 
@@ -15,6 +16,7 @@ export type {
   MemoryDoc,
   MemoryKind,
   MemoryProfile,
+  PendingStatus,
   RecalledMemory,
 } from "./component.js";
 
@@ -32,10 +34,12 @@ export type EverOSOptions = {
   /** EverOS Cloud base URL. Defaults to `process.env.EVEROS_BASE_URL` or the public cloud. */
   baseUrl?: string;
   /**
-   * When true (default), ask EverOS to extract memories immediately after each
-   * ingest so remembered content becomes recallable right away. Set to false
-   * to let extraction run on EverOS's own async schedule (cheaper for
-   * high-volume ingestion).
+   * When true (the default), the component drives EverOS extraction after each
+   * ingest so remembered content becomes searchable.
+   *
+   * EverOS Cloud does **not** extract on a schedule of its own: with this off,
+   * ingested content stays in its buffer and never becomes searchable. Only
+   * set it to false if your app calls the EverOS flush endpoint itself.
    */
   eagerExtraction?: boolean;
 };
@@ -94,7 +98,6 @@ export class EverOS {
       content: string;
       role?: "user" | "assistant";
       sessionId?: string;
-      metadata?: Record<string, unknown>;
     },
   ): Promise<{ pendingId: string }> {
     return ctx.runMutation(this.component.lib.remember, {
@@ -165,6 +168,19 @@ export class EverOS {
     });
   }
 
+  /**
+   * Whether anything a user remembered is still on its way to EverOS, and why
+   * if it is stuck. `remember` returns before the network call happens, so
+   * this is how an app surfaces a rejected API key or a stalled extraction
+   * instead of it looking like slow indexing.
+   */
+  async getPendingStatus(
+    ctx: RunQueryCtx,
+    args: { userId: string; limit?: number },
+  ): Promise<PendingStatus> {
+    return ctx.runQuery(this.component.lib.getPendingStatus, args);
+  }
+
   /** Paginate the local index of a user's memories (reactive). */
   async listMemories(
     ctx: RunQueryCtx,
@@ -187,9 +203,12 @@ export class EverOS {
    * });
    * ```
    */
-  asTool(config: { userId: string; topK?: number }) {
+  asTool(config: { userId?: string; topK?: number } = {}) {
     const component = this.component;
-    const creds = this.creds();
+    // Resolve credentials inside execute, not here: tools are built at module
+    // scope (in an Agent's `tools`), and throwing there breaks deploy analysis
+    // rather than the one call that actually needs a key.
+    const creds = () => this.creds();
     return createTool({
       description:
         "Search the user's long-term memory for relevant facts, preferences, " +
@@ -201,13 +220,22 @@ export class EverOS {
           .describe("What to recall from the user's long-term memory."),
       }),
       execute: async (ctx: ToolCtx, args): Promise<string> => {
+        // Fall back to the thread's user so the tool can be built once, at
+        // module scope, instead of per request.
+        const userId = config.userId ?? ctx.userId;
+        if (!userId) {
+          throw new Error(
+            "searchMemory has no user: pass `asTool({ userId })`, or call the " +
+              "agent with a `userId` so the tool can use the thread's user.",
+          );
+        }
         const memories: RecalledMemory[] = await ctx.runAction(
           component.lib.recall,
           {
-            userId: config.userId,
+            userId,
             query: args.query,
             topK: config.topK ?? 5,
-            ...creds,
+            ...creds(),
           },
         );
         if (memories.length === 0)

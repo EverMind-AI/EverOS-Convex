@@ -6,17 +6,10 @@
 
 export const DEFAULT_BASE_URL = "https://api.evermind.ai";
 
-/** App-facing memory kind -> EverOS v2 wire memory_type. */
-export const KIND_TO_MEMORY_TYPE: Record<string, string> = {
-  episodic: "episode",
-  semantic: "profile",
-  profile: "profile",
-};
-
 /** EverOS wire memory_type -> app-facing memory kind. */
 export function memoryTypeToKind(
   memoryType: string,
-): "episodic" | "semantic" | "profile" {
+): "episodic" | "profile" {
   switch (memoryType) {
     case "profile":
       return "profile";
@@ -47,6 +40,17 @@ async function everosRequest<T>(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      // The most common first-run mistake. Without calling it out, a bad key
+      // looks exactly like "extraction is just slow": remember() succeeds,
+      // recall() returns only not-yet-extracted rows, and the 401 is buried
+      // in the logs of a scheduled action nobody is watching.
+      throw new Error(
+        `EverOS rejected the API key (${res.status} on ${path}). Check ` +
+          "EVEROS_API_KEY in this deployment's environment variables, and " +
+          "that the key belongs to the same environment as EVEROS_BASE_URL.",
+      );
+    }
     throw new Error(
       `EverOS API ${path} failed: ${res.status} ${res.statusText} ${text}`,
     );
@@ -228,7 +232,7 @@ export async function searchMemories(
     userId: string;
     query: string;
     topK?: number;
-    kind?: "episodic" | "semantic" | "profile";
+    kind?: "episodic" | "profile";
   },
 ): Promise<{
   episodes: EverosEpisode[];

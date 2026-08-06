@@ -36,7 +36,8 @@
     "test:watch": "vitest",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "lint": "eslint src"
   },
   "files": [
     "dist",
@@ -58,6 +59,9 @@
       "types": "./dist/component/convex.config.d.ts",
       "default": "./dist/component/convex.config.js"
     },
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
     "./test": "./src/test.ts"
   },
   "types": "./dist/client/index.d.ts",
@@ -67,18 +71,28 @@
   },
   "peerDependencies": {
     "@convex-dev/agent": "^0.6.0",
-    "convex": "^1.36.1",
-    "zod": "^3.24.0"
+    "convex": "^1.24.8",
+    "zod": "^3.24.0 || ^4.0.0"
   },
   "devDependencies": {
     "@convex-dev/agent": "^0.6.4",
     "@edge-runtime/vm": "^5.0.0",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
     "chokidar-cli": "^3.0.0",
     "convex": "^1.36.1",
     "convex-test": "^0.0.38",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.66.0",
     "vitest": "^2.1.0",
     "zod": "^3.24.0"
+  },
+  "peerDependenciesMeta": {
+    "@convex-dev/agent": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
   }
 }

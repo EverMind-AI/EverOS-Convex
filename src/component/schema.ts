@@ -1,24 +1,24 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-// The three memory "kinds" surfaced to app developers. These map onto EverOS
-// memory types on the wire (see `everos.ts`):
-//   episodic -> "episode"
-//   semantic -> "profile"
-//   profile  -> "profile"
-export const kind = v.union(
-  v.literal("episodic"),
-  v.literal("semantic"),
-  v.literal("profile"),
-);
+// The memory kinds surfaced to app developers, mapping onto EverOS wire
+// memory types (see `everos.ts`): episodic -> "episode", profile -> "profile".
+// There is deliberately no "semantic": nothing ever produced it, so asking for
+// it returned rows labelled "profile" and a `kind === "semantic"` filter
+// always came back empty.
+export const kind = v.union(v.literal("episodic"), v.literal("profile"));
 
-// queued -> sent (ingested, awaiting extraction) -> extracted | failed.
-// Rows in queued/sent are merged into recall results as read-your-writes
-// (EverOS extraction is asynchronous); extracted rows drop out of that merge.
+// queued -> sending -> sent, then the row is deleted once EverOS confirms
+// extraction (it has no purpose after that, and keeping it would grow the
+// table forever). `sending` is a claim: a row is flipped into it inside a
+// mutation so concurrent flush actions cannot pick up the same row and ingest
+// it twice. Rows still here are merged into recall results as read-your-writes,
+// because extraction is asynchronous. `failed` rows are kept deliberately, as
+// the only record that content never made it.
 export const pendingStatus = v.union(
   v.literal("queued"),
+  v.literal("sending"),
   v.literal("sent"),
-  v.literal("extracted"),
   v.literal("failed"),
 );
 
@@ -48,16 +48,21 @@ export default defineSchema({
     content: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant")),
     sessionId: v.optional(v.string()),
-    metadata: v.optional(v.record(v.string(), v.any())),
     status: pendingStatus,
     attempts: v.number(),
+    // When the row was claimed into `sending`, so a flush that never reported
+    // back can be reclaimed instead of stranding the row.
+    claimedAt: v.optional(v.number()),
     // Deprecated: v1 ingest returned a task id; v2 has none. Kept optional so
     // rows written by earlier versions still validate.
     everosTaskId: v.optional(v.string()),
     lastError: v.optional(v.string()),
   })
     .index("by_status", ["status"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // Recall reads only a user's unextracted rows; without this it would scan
+    // every row the user has ever written.
+    .index("by_user_and_status", ["userId", "status"]),
 
   // Optional usage log for billing / analytics examples.
   usage: defineTable({

@@ -21,12 +21,12 @@ const memories = await everos.recall(ctx, { userId, query: "what do I eat?" });
 ## Install
 
 ```bash
-npm install @everos/convex @convex-dev/agent zod
+npm install @everos/convex
 ```
 
-> `@convex-dev/agent` and `zod` are peer dependencies used by the agent-tool
-> helpers (`asTool`, `contextMessages`). Install them even if you only use
-> `remember`/`recall` today.
+> `asTool` additionally needs `@convex-dev/agent` and `zod`, which are optional
+> peer dependencies: install them only if you use the agent integration below.
+> `remember` / `recall` / `contextMessages` work without them.
 
 ### 1. Register the component
 
@@ -45,7 +45,7 @@ export default app;
 Get a free key at **[evermind.ai](https://evermind.ai)** (free tier), then:
 
 ```bash
-npx convex env set EVEROS_API_KEY 00000000-0000-0000-0000-000000000000
+npx convex env set EVEROS_API_KEY <your-key>
 # optional — defaults to https://api.evermind.ai
 npx convex env set EVEROS_BASE_URL https://api.evermind.ai
 ```
@@ -98,12 +98,13 @@ export const recall = action({
 
 | Method | Kind | Description |
 | --- | --- | --- |
-| `everos.remember(ctx, { userId, content, metadata?, role?, sessionId? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
+| `everos.remember(ctx, { userId, content, role?, sessionId? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
 | `everos.recall(ctx, { userId, query, topK?, kind?, includeRecent? })` | action | Retrieve relevant memories, ranked (plus not-yet-extracted content marked `pending`) |
 | `everos.getProfile(ctx, { userId })` | action | Fetch the user's profile / semantic memory |
 | `everos.forgetSession(ctx, { userId, sessionId })` | action | Delete one session's memories remotely + locally |
 | `everos.forgetUser(ctx, { userId })` | action | Delete ALL of a user's memories remotely + locally |
-| `everos.listMemories(ctx, { userId, paginationOpts })` | query | Reactive local index of a user's memories |
+| `everos.getPendingStatus(ctx, { userId })` | query | Whether anything is still on its way to EverOS, and why if it is stuck |
+| `everos.listMemories(ctx, { userId, paginationOpts })` | query | Reactive index of memories **seen so far via `recall`** (not everything remembered) |
 
 > **How ingestion works:** `remember` is a mutation (mutations can't make
 > external calls), so it writes to a durable `pending` queue and schedules a
@@ -116,6 +117,11 @@ export const recall = action({
 > this step ingested content would stay in its buffer and never become
 > searchable. Only pass `new EverOS(components.everos, { eagerExtraction:
 > false })` if your app calls the EverOS flush endpoint on its own.
+>
+> **If something looks missing**, `getPendingStatus` says whether it is still
+> in flight or actually failed. A rejected API key shows up there as
+> `lastError`; without checking it, a bad key is indistinguishable from
+> extraction being slow.
 
 ---
 
@@ -183,7 +189,7 @@ models, and sessions — and auditable**.
 ```bash
 cd example
 npm install
-npx convex env set EVEROS_API_KEY 00000000-0000-0000-0000-000000000000
+npx convex env set EVEROS_API_KEY <your-key>
 # LLM: either OpenRouter (any model) or plain OpenAI
 npx convex env set OPENROUTER_API_KEY sk-or-...   # uses openai/gpt-4o-mini
 # or: npx convex env set OPENAI_API_KEY sk-...

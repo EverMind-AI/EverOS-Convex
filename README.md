@@ -21,12 +21,13 @@ const memories = await everos.recall(ctx, { userId, query: "what do I eat?" });
 ## Install
 
 ```bash
-npm install @everos/convex
+npm install @everos/convex @convex-dev/agent zod
 ```
 
-> `asTool` additionally needs `@convex-dev/agent` and `zod`, which are optional
-> peer dependencies: install them only if you use the agent integration below.
-> `remember` / `recall` / `contextMessages` work without them.
+> `@convex-dev/agent` and `zod` are peer dependencies. The main entry imports
+> them for `asTool`, and Convex resolves imports when it pushes your code, so
+> they are required even if you only call `remember` / `recall`. Splitting the
+> agent helpers into their own entry point is tracked for a later release.
 
 ### 1. Register the component
 

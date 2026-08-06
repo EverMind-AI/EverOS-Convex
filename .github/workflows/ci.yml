@@ -19,3 +19,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npm run lint
+      # The client's ComponentApi is hand-written, so nothing but this check
+      # catches it drifting from the functions it describes: a new required
+      # argument keeps compiling here and fails argument validation in every
+      # consumer at runtime.
+      - name: Typecheck the example against the built package
+        run: |
+          cd example
+          npm ci
+          npx tsc --noEmit -p convex/tsconfig.json

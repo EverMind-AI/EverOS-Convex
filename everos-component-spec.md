@@ -176,6 +176,17 @@ Flag these to the component owner before shipping such a change:
   at the cost of unreadable ids in EverOS.
 - **`getPendingStatus` returns a capped count**, not a census, because it is
   re-run reactively. `capped` says when the real figure is higher.
+- **The agent helpers are in the main entry point**, so `@convex-dev/agent` and
+  `zod` are required peers even for an app that only calls `remember` /
+  `recall`: Convex resolves imports at push time, so a static import in the
+  entry is a hard dependency. Moving `asTool` to a `@everos/convex/agent`
+  subpath would make them genuinely optional, and is the right follow-up.
+- **`sent` rows that no extraction ever confirms are kept, not deleted.** The
+  tempting shortcut is to assume a sibling extraction covered them, but when
+  that assumption is wrong the content silently disappears from recall while
+  `getPendingStatus` reports all clear — the one failure this component exists
+  to make visible. A successful extraction retires its siblings explicitly, by
+  comparing each row's `sentAt` against when the extraction ran.
 
 ## Client (app-side, src/client/index.ts)
 

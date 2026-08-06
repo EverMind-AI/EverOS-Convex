@@ -58,6 +58,16 @@ export default defineSchema({
     // When the row was claimed into `sending`, so a flush that never reported
     // back can be reclaimed instead of stranding the row.
     claimedAt: v.optional(v.number()),
+    // When EverOS accepted the ingest. A successful extraction drains the
+    // whole session buffer, so it covers every row ingested before it ran;
+    // this is what lets one extraction retire its siblings' rows without
+    // guessing.
+    sentAt: v.optional(v.number()),
+    // Which EverOS namespace the row was enqueued for. One deployment may hold
+    // more than one client (staging and production, say), and a flush must not
+    // ingest one client's rows under another's scope.
+    appId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
     // Neither of these is written any more. They are still declared because
     // Convex validates every existing document against the schema on deploy,
     // so removing a field that an earlier version wrote turns an upgrade into

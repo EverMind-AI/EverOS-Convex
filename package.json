@@ -71,7 +71,7 @@
   },
   "peerDependencies": {
     "@convex-dev/agent": "^0.6.0",
-    "convex": "^1.24.8",
+    "convex": "^1.32.0",
     "zod": "^3.24.0 || ^4.0.0"
   },
   "devDependencies": {
@@ -86,13 +86,5 @@
     "typescript-eslint": "^8.66.0",
     "vitest": "^2.1.0",
     "zod": "^3.24.0"
-  },
-  "peerDependenciesMeta": {
-    "@convex-dev/agent": {
-      "optional": true
-    },
-    "zod": {
-      "optional": true
-    }
   }
 }

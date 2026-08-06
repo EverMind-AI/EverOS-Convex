@@ -358,6 +358,40 @@ describe("namespace scoping", () => {
     }
   });
 
+  test("ingests each row under the namespace it was enqueued for", async () => {
+    const t = convexTest(schema, modules);
+    const adds: any[] = [];
+    mockEveros({
+      "/api/v2/memory/add": (body) => {
+        adds.push(body);
+        return { data: { status: "queued", message_count: 1 } };
+      },
+    });
+    // One deployment, two clients: staging and production. A flush scheduled
+    // by either must not ingest the other's rows under its own scope.
+    await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "staging fact",
+      appId: "staging",
+      projectId: "staging",
+      ...CREDS,
+    });
+    await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "production fact",
+      appId: "prod",
+      projectId: "prod",
+      ...CREDS,
+    });
+    await t.action(internal.lib.flush, { eager: false, ...CREDS });
+
+    const byApp = Object.fromEntries(
+      adds.map((b) => [b.app_id, b.messages.map((m: any) => m.content)]),
+    );
+    expect(byApp["staging"]).toEqual(["staging fact"]);
+    expect(byApp["prod"]).toEqual(["production fact"]);
+  });
+
   test("omits them entirely when unset, so EverOS applies its own default", async () => {
     const t = convexTest(schema, modules);
     let body: any;

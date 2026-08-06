@@ -110,6 +110,8 @@ export const remember = mutation({
       content: args.content,
       role: args.role ?? "user",
       sessionId: args.sessionId,
+      appId: args.appId,
+      projectId: args.projectId,
       status: "queued",
       attempts: 0,
     });
@@ -170,6 +172,8 @@ export const claimQueued = internalMutation({
         content: v.string(),
         role: v.union(v.literal("user"), v.literal("assistant")),
         sessionId: v.optional(v.string()),
+        appId: v.optional(v.string()),
+        projectId: v.optional(v.string()),
         attempts: v.number(),
       }),
     ),
@@ -189,6 +193,8 @@ export const claimQueued = internalMutation({
       content: string;
       role: "user" | "assistant";
       sessionId?: string;
+      appId?: string;
+      projectId?: string;
       attempts: number;
     }>;
     sweepId: Id<"_scheduled_functions"> | null;
@@ -251,6 +257,8 @@ export const claimQueued = internalMutation({
         content: r.content,
         role: r.role,
         sessionId: r.sessionId,
+        appId: r.appId,
+        projectId: r.projectId,
         attempts: r.attempts,
       });
     }
@@ -289,7 +297,11 @@ export const markSent = internalMutation({
       // whole group would stay unmarked and be re-sent to EverOS.
       const row = await ctx.db.get(id);
       if (!row) continue;
-      await ctx.db.patch(id, { status: "sent", claimedAt: undefined });
+      await ctx.db.patch(id, {
+        status: "sent",
+        claimedAt: undefined,
+        sentAt: Date.now(),
+      });
     }
     return null;
   },
@@ -327,9 +339,20 @@ export const markFailed = internalMutation({
 // flush was scheduled, hiding it from the read-your-writes merge before it is
 // actually searchable.
 export const markExtracted = internalMutation({
-  args: { ids: v.array(v.id("pending")) },
+  args: {
+    ids: v.array(v.id("pending")),
+    // Everything ingested into this session before the extraction ran was in
+    // the buffer it drained, so it is covered too. Without this, two
+    // `remember` calls in one session start two extraction chains against one
+    // buffer: the first drains it, and the second is told "no_extraction"
+    // about rows that are in fact searchable.
+    userId: v.optional(v.string()),
+    sessionId: v.optional(v.string()),
+    coveredBefore: v.optional(v.number()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
+    const done = new Set<string>();
     for (const id of args.ids) {
       const row = await ctx.db.get(id);
       if (row && row.status === "sent") {
@@ -337,11 +360,29 @@ export const markExtracted = internalMutation({
         // no further purpose, and keeping it would grow the table for the
         // lifetime of the app and slow every subsequent read of it.
         await ctx.db.delete(id);
+        done.add(id);
+      }
+    }
+    const { userId, sessionId, coveredBefore } = args;
+    if (userId === undefined || coveredBefore === undefined) return null;
+    const siblings = await ctx.db
+      .query("pending")
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("userId", userId).eq("status", "sent"),
+      )
+      .take(200);
+    for (const row of siblings) {
+      if (done.has(row._id)) continue;
+      if (effectiveSessionId(row.userId, row.sessionId) !== sessionId) continue;
+      // Only rows whose ingest had already landed when the extraction ran.
+      if ((row.sentAt ?? Infinity) <= coveredBefore) {
+        await ctx.db.delete(row._id);
       }
     }
     return null;
   },
 });
+
 
 // Record why content is ingested but still not searchable, so it is
 // reportable through `getPendingStatus` instead of failing silently.
@@ -397,7 +438,16 @@ export const flush = internalAction({
     // fewer server-side tasks and faster extraction than one call per message.
     const groups = new Map<string, typeof claimed>();
     for (const item of claimed) {
-      const key = `${item.userId} ${effectiveSessionId(item.userId, item.sessionId)}`;
+      // Keyed by namespace as well as session: a deployment can hold more
+      // than one client, and rows enqueued for one namespace must not be
+      // ingested under another's scope, or billed to its key. JSON rather
+      // than a delimiter, because a user id may contain any character.
+      const key = JSON.stringify([
+        item.userId,
+        effectiveSessionId(item.userId, item.sessionId),
+        item.appId ?? null,
+        item.projectId ?? null,
+      ]);
       const g = groups.get(key);
       if (g) g.push(item);
       else groups.set(key, [item]);
@@ -407,8 +457,15 @@ export const flush = internalAction({
       const { userId } = group[0];
       const sessionId = effectiveSessionId(userId, group[0].sessionId);
       const ids = group.map((item) => item._id);
+      // The row's own namespace wins over this flush's, since the flush may
+      // have been scheduled by a different client in the same deployment.
+      const groupConfig: EverosConfig = {
+        ...config,
+        appId: group[0].appId ?? config.appId,
+        projectId: group[0].projectId ?? config.projectId,
+      };
       try {
-        await addMemories(config, {
+        await addMemories(groupConfig, {
           sessionId,
           messages: group.map((item, i) => ({
             role: item.role,
@@ -432,9 +489,10 @@ export const flush = internalAction({
             {
               apiKey: args.apiKey,
               baseUrl: args.baseUrl,
-              appId: args.appId,
-              projectId: args.projectId,
+              appId: groupConfig.appId,
+              projectId: groupConfig.projectId,
               sessionId,
+              userId,
               ids,
             },
           );
@@ -486,6 +544,7 @@ export const runExtraction = internalAction({
     projectId: v.optional(v.string()),
     // Extraction buffers are keyed by session on the EverOS side.
     sessionId: v.string(),
+    userId: v.string(),
     // The rows this extraction covers, so only they are retired.
     ids: v.array(v.id("pending")),
     attempt: v.optional(v.number()),
@@ -499,6 +558,9 @@ export const runExtraction = internalAction({
       projectId: args.projectId,
     };
     const attempt = args.attempt ?? 0;
+    // Captured before the call: anything ingested by now is in the buffer this
+    // extraction drains, so a success covers it.
+    const coveredBefore = Date.now();
     let extracted = false;
     let lastError: string | undefined;
     try {
@@ -512,7 +574,12 @@ export const runExtraction = internalAction({
     }
 
     if (extracted) {
-      await ctx.runMutation(internal.lib.markExtracted, { ids: args.ids });
+      await ctx.runMutation(internal.lib.markExtracted, {
+        ids: args.ids,
+        userId: args.userId,
+        sessionId: args.sessionId,
+        coveredBefore,
+      });
       return null;
     }
     if (attempt < EXTRACTION_RETRY_DELAYS_MS.length) {
@@ -523,23 +590,18 @@ export const runExtraction = internalAction({
       );
       return null;
     }
-    if (lastError === undefined) {
-      // Out of retries with EverOS reporting "no_extraction" every time. That
-      // is the expected outcome when a sibling chain already drained this
-      // session's buffer: two `remember` calls in one session schedule two
-      // extractions against one buffer, the first drains it and the second
-      // finds nothing. The content is ingested and covered by the sibling, so
-      // retire these rows. Keeping them would leave `sent` a state rows never
-      // leave, growing the table forever and pinning getPendingStatus above
-      // zero for the life of the app.
-      await ctx.runMutation(internal.lib.markExtracted, { ids: args.ids });
-      return null;
-    }
-    // A genuine error (network, auth) rather than an empty buffer. Keep the
-    // rows and record why, so it surfaces through `getPendingStatus`.
+    // Out of retries. Do not assume a sibling covered these rows and delete
+    // them: when that assumption is wrong the content disappears from recall
+    // and `getPendingStatus` reports all clear, which is the one failure this
+    // component exists to make visible. A sibling that genuinely did cover
+    // them retires them through `markExtracted` above. Keep them and record
+    // why.
     await ctx.runMutation(internal.lib.markExtractionStalled, {
       ids: args.ids,
-      error: lastError,
+      error:
+        lastError ??
+        "EverOS reported no extraction after repeated flushes; the content is " +
+          "ingested but not confirmed searchable.",
     });
     return null;
   },
@@ -843,25 +905,31 @@ export const getProfile = action({
 
 export const clearSessionLocal = internalMutation({
   args: { userId: v.string(), sessionId: v.string() },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
+    // A page at a time, like clearUserLocal: collecting a heavy user's whole
+    // history in one transaction makes deletion fail for exactly the users
+    // most likely to ask for it.
+    let budget = DELETE_PAGE;
     const memories = await ctx.db
       .query("memories")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const row of memories) {
+      .take(budget + 1);
+    for (const row of memories.slice(0, budget)) {
       if (row.sessionId === args.sessionId) await ctx.db.delete(row._id);
     }
+    budget -= Math.min(memories.length, budget);
+    if (budget <= 0) return true;
     const pending = await ctx.db
       .query("pending")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const row of pending) {
+      .take(budget + 1);
+    for (const row of pending.slice(0, budget)) {
       if (effectiveSessionId(row.userId, row.sessionId) === args.sessionId) {
         await ctx.db.delete(row._id);
       }
     }
-    return null;
+    return pending.length > budget;
   },
 });
 
@@ -887,10 +955,13 @@ export const forgetSession = action({
     // caller's raw id would silently match nothing on both sides.
     const sessionId = effectiveSessionId(args.userId, args.sessionId);
     const { deletedCount } = await deleteSessionMemories(config, { sessionId });
-    await ctx.runMutation(internal.lib.clearSessionLocal, {
-      userId: args.userId,
-      sessionId,
-    });
+    let more = true;
+    while (more) {
+      more = await ctx.runMutation(internal.lib.clearSessionLocal, {
+        userId: args.userId,
+        sessionId,
+      });
+    }
     return { deletedCount };
   },
 });

@@ -90,6 +90,39 @@ describe("remember + flush", () => {
     expect(row).toBeNull();
   });
 
+  test("rememberMessages ingests a whole turn as one call, in order", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const adds: any[] = [];
+    mockEveros({
+      "/api/v2/memory/add": (body) => {
+        adds.push(body);
+        return { data: { status: "queued", message_count: 2 } };
+      },
+      "/api/v2/memory/flush": () => ({ data: { status: "extracted" } }),
+    });
+
+    await t.mutation(api.lib.rememberMessages, {
+      userId: "u1",
+      messages: [
+        { content: "my webhooks fail with 429s", role: "user" },
+        { content: "I've raised your limit to 10k/min", role: "assistant" },
+      ],
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // One ingest call for the turn, both halves present and in order, and
+    // identity attributed per message: the user's half carries their id.
+    expect(adds).toHaveLength(1);
+    expect(adds[0].messages.map((m: any) => [m.role, m.sender_id])).toEqual([
+      ["user", "u1"],
+      ["assistant", "assistant"],
+    ]);
+    const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(rows).toHaveLength(0);
+  });
+
   test("retries flush while the ingest hasn't landed (no_extraction)", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
@@ -314,6 +347,7 @@ describe("namespace scoping", () => {
   });
 
   test("ingests each row under the namespace it was enqueued for", async () => {
+    vi.useFakeTimers();
     const t = convexTest(schema, modules);
     const adds: any[] = [];
     mockEveros({
@@ -321,9 +355,12 @@ describe("namespace scoping", () => {
         adds.push(body);
         return { data: { status: "queued", message_count: 1 } };
       },
+      "/api/v2/memory/flush": () => ({ data: { status: "extracted" } }),
     });
-    // One deployment, two clients: staging and production. A flush scheduled
-    // by either must not ingest the other's rows under its own scope.
+    // One deployment, two clients: staging and production. Each remember
+    // schedules a flush carrying its own client's scope, and whichever runs
+    // first claims BOTH rows — it must ingest each row under the row's own
+    // namespace, not under the scope it was scheduled with.
     await t.mutation(api.lib.remember, {
       userId: "u1",
       content: "staging fact",
@@ -338,7 +375,11 @@ describe("namespace scoping", () => {
       projectId: "prod",
       ...CREDS,
     });
-    await t.action(internal.lib.flush, { ...CREDS });
+    // Drain the scheduled flushes (and the extraction chains they schedule).
+    // Leaving them behind is not just untidy: their runAfter(0) callbacks
+    // fire during whichever test runs next and fail the suite as unhandled
+    // rejections from convex-test.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const byApp = Object.fromEntries(
       adds.map((b) => [b.app_id, b.messages.map((m: any) => m.content)]),
@@ -673,6 +714,49 @@ describe("forgetSession", () => {
 
     const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
     expect(pending).toHaveLength(0);
+  });
+
+  test("reaches matches beyond the first page of an unrelated backlog", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({
+      "/api/v2/memory/delete": () => ({
+        data: { filters: ["session_id"], count: 1 },
+      }),
+    });
+    // 201 rows from another session sit in front of the one to delete —
+    // more than one DELETE_PAGE (200). A cleaner that re-reads the head of
+    // the index every round would delete nothing, report more to do, and
+    // spin until the action times out, never reaching the match.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 201; i++) {
+        await ctx.db.insert("pending", {
+          userId: "u1",
+          content: `backlog ${i}`,
+          role: "user",
+          sessionId: "other-session",
+          status: "failed",
+          attempts: 5,
+        });
+      }
+      await ctx.db.insert("pending", {
+        userId: "u1",
+        content: "the one to forget",
+        role: "user",
+        sessionId: "s1",
+        status: "failed",
+        attempts: 5,
+      });
+    });
+
+    await t.action(api.lib.forgetSession, {
+      userId: "u1",
+      sessionId: "s1",
+      ...CREDS,
+    });
+
+    const pending = await t.run(async (ctx) => ctx.db.query("pending").collect());
+    expect(pending).toHaveLength(201);
+    expect(pending.every((r) => r.sessionId === "other-session")).toBe(true);
   });
 });
 

@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { paginator } from "convex-helpers/server/pagination";
 import {
   action,
   internalAction,
@@ -9,7 +10,7 @@ import {
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { kind } from "./schema.js";
+import schema, { kind } from "./schema.js";
 import {
   addMemories,
   getEpisodes,
@@ -866,25 +867,31 @@ export const getProfile = action({
 // single-memory delete endpoint.
 
 export const clearSessionLocal = internalMutation({
-  args: { userId: v.string(), sessionId: v.string() },
-  returns: v.boolean(),
+  args: {
+    userId: v.string(),
+    sessionId: v.string(),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({ isDone: v.boolean(), continueCursor: v.string() }),
   handler: async (ctx, args) => {
     // A page at a time, like clearUserLocal: collecting a heavy user's whole
     // history in one transaction makes deletion fail for exactly the users
-    // most likely to ask for it.
-    const budget = DELETE_PAGE;
-    // by_user_and_status, keyed on its userId prefix: these scans are
-    // order-insensitive, so a second narrower index would be pure write cost.
-    const pending = await ctx.db
+    // most likely to ask for it. Paged by cursor rather than by re-reading
+    // the head: rows from other sessions are left in place, so a head re-read
+    // stalls in front of them forever once the first page holds no match —
+    // deleting nothing yet always reporting more to do.
+    // by_user_and_status, keyed on its userId prefix: this walk doesn't care
+    // about status order, so a second narrower index would be pure write cost.
+    const { page, isDone, continueCursor } = await paginator(ctx.db, schema)
       .query("pending")
       .withIndex("by_user_and_status", (q) => q.eq("userId", args.userId))
-      .take(budget + 1);
-    for (const row of pending.slice(0, budget)) {
+      .paginate({ numItems: DELETE_PAGE, cursor: args.cursor });
+    for (const row of page) {
       if (effectiveSessionId(row.userId, row.sessionId) === args.sessionId) {
         await ctx.db.delete(row._id);
       }
     }
-    return pending.length > budget;
+    return { isDone, continueCursor };
   },
 });
 
@@ -910,12 +917,17 @@ export const forgetSession = action({
     // caller's raw id would silently match nothing on both sides.
     const sessionId = effectiveSessionId(args.userId, args.sessionId);
     const { deletedCount } = await deleteSessionMemories(config, { sessionId });
-    let more = true;
-    while (more) {
-      more = await ctx.runMutation(internal.lib.clearSessionLocal, {
-        userId: args.userId,
-        sessionId,
-      });
+    let cursor: string | null = null;
+    let isDone = false;
+    while (!isDone) {
+      const res: { isDone: boolean; continueCursor: string } =
+        await ctx.runMutation(internal.lib.clearSessionLocal, {
+          userId: args.userId,
+          sessionId,
+          cursor,
+        });
+      isDone = res.isDone;
+      cursor = res.continueCursor;
     }
     return { deletedCount };
   },

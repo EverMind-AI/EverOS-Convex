@@ -69,7 +69,7 @@ error fails the build rather than shipping a broken bundle.
 
 The demo has no sign-in and runs on our LLM key, so it is capped:
 `DEMO_MESSAGE_LIMIT` in `convex/chat.ts` gives each conversation 12 messages,
-after which the composer shows a notice pointing at `npm i @everos/convex`.
+after which the composer shows a notice pointing at `npm i @everos-ai/convex`.
 A visitor can start fresh from a new browser profile, so treat this as a spend
 guard against loops and casual abuse, not as access control.
 

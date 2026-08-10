@@ -1,6 +1,6 @@
 import { defineApp } from "convex/server";
 import agent from "@convex-dev/agent/convex.config";
-import everos from "@everos/convex/convex.config";
+import everos from "@everos-ai/convex/convex.config";
 
 const app = defineApp();
 app.use(agent);
@@ -8,7 +8,7 @@ app.use(agent);
 app.use(everos as any); // see "Local development" in the root README: linking
 // the component with `file:..` resolves two copies of `convex`, so the two
 // `ComponentDefinition` types are structurally identical but nominally
-// distinct. Apps that install @everos/convex from npm have one copy and do
+// distinct. Apps that install @everos-ai/convex from npm have one copy and do
 // not need this cast.
 
 export default app;

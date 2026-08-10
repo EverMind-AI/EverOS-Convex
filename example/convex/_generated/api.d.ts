@@ -52,5 +52,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   agent: import("@convex-dev/agent/_generated/component.js").ComponentApi<"agent">;
-  everos: import("@everos/convex/_generated/component.js").ComponentApi<"everos">;
+  everos: import("@everos-ai/convex/_generated/component.js").ComponentApi<"everos">;
 };

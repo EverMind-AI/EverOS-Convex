@@ -17,7 +17,7 @@ export const modules = Object.fromEntries(
  * ```ts
  * import { convexTest } from "convex-test";
  * import schema from "./schema.js";
- * import everos from "@everos/convex/test";
+ * import everos from "@everos-ai/convex/test";
  * const t = convexTest(schema, import.meta.glob("./**\/*.ts"));
  * everos.register(t);
  * ```

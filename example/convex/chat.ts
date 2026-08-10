@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { Agent, stepCountIs } from "@convex-dev/agent";
 import { createOpenAI } from "@ai-sdk/openai";
-import { EverOS } from "@everos/convex";
+import { EverOS } from "@everos-ai/convex";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
@@ -443,7 +443,7 @@ export const sendMessage = action({
       throw new Error(
         `This shared demo allows ${DEMO_MESSAGE_LIMIT} messages per ` +
           "conversation. Install the component to run it without limits: " +
-          "npm i @everos/convex",
+          "npm i @everos-ai/convex",
       );
     }
 
@@ -564,7 +564,7 @@ export const escalate = action({
       throw new Error(
         `This shared demo allows ${DEMO_MESSAGE_LIMIT} messages per ` +
           "conversation. Install the component to run it without limits: " +
-          "npm i @everos/convex",
+          "npm i @everos-ai/convex",
       );
     }
 

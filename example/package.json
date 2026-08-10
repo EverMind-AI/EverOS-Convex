@@ -13,7 +13,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.10",
     "@convex-dev/agent": "^0.6.4",
-    "@everos/convex": "file:..",
+    "@everos-ai/convex": "file:..",
     "ai": "^6.0.35",
     "convex": "^1.36.1",
     "react": "^19.0.0",

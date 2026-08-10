@@ -1,4 +1,4 @@
-# @everos/convex
+# @everos-ai/convex
 
 Long-term memory for [Convex](https://convex.dev) apps, backed by
 [EverOS Cloud](https://evermind.ai) — the open-source agent memory OS
@@ -21,7 +21,7 @@ const memories = await everos.recall(ctx, { userId, query: "what do I eat?" });
 ## Install
 
 ```bash
-npm install @everos/convex @convex-dev/agent zod
+npm install @everos-ai/convex @convex-dev/agent zod
 ```
 
 > `@convex-dev/agent` and `zod` are peer dependencies. The main entry imports
@@ -34,7 +34,7 @@ npm install @everos/convex @convex-dev/agent zod
 ```ts
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import everos from "@everos/convex/convex.config";
+import everos from "@everos-ai/convex/convex.config";
 
 const app = defineApp();
 app.use(everos);
@@ -86,7 +86,7 @@ best practice, secrets are resolved in your app and threaded into the component
 import { action, mutation } from "./_generated/server";
 import { components } from "./_generated/api";
 import { v } from "convex/values";
-import { EverOS } from "@everos/convex";
+import { EverOS } from "@everos-ai/convex";
 
 const everos = new EverOS(components.everos);
 
@@ -146,7 +146,7 @@ model calls, or as **context** you prepend.
 ```ts
 import { Agent } from "@convex-dev/agent";
 import { openai } from "@ai-sdk/openai";
-import { EverOS } from "@everos/convex";
+import { EverOS } from "@everos-ai/convex";
 import { components } from "./_generated/api";
 
 const everos = new EverOS(components.everos);
@@ -229,7 +229,7 @@ instance:
 ```ts
 import { convexTest } from "convex-test";
 import schema from "./schema.js";
-import everos from "@everos/convex/test";
+import everos from "@everos-ai/convex/test";
 
 const t = convexTest(schema, import.meta.glob("./**/*.ts"));
 everos.register(t);
@@ -267,7 +267,7 @@ The [`example/`](./example) app links this package with `file:..`, so two
 copies of `convex` resolve during local dev and the two `ComponentDefinition`
 types end up structurally identical but nominally distinct. The example's
 `convex.config.ts` casts around it with a comment. It is a link-only artifact:
-apps that install `@everos/convex` from npm resolve a single `convex` and need
+apps that install `@everos-ai/convex` from npm resolve a single `convex` and need
 no cast. Everything else type-checks strictly, in the example and in the
 component package (`npm run build`, `npm test`).
 

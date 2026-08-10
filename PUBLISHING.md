@@ -1,8 +1,9 @@
-# Publishing `@everos/convex`
+# Publishing `@everos-ai/convex`
 
 ## One-time setup
 
-- `npm login` with an account that can publish under the `@evermind` scope.
+- `npm login` with an account that can publish under the `@everos-ai` scope
+  (a member of the `everos-ai` npm org).
 - Ensure the scope allows public publishing (`npm access` / org settings).
 
 ## Release checklist
@@ -53,7 +54,7 @@
 After publishing, submit at
 **https://www.convex.dev/components/submit** with:
 
-- npm package: `@everos/convex`
+- npm package: `@everos-ai/convex`
 - repo link
 - the demo app in [`example/`](./example) (deploy it or link a walkthrough)
 - README highlighting the `@convex-dev/agent` integration

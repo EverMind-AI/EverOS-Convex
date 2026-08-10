@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { EverOS } from "@everos/convex";
+import { EverOS } from "@everos-ai/convex";
 import { components } from "./_generated/api.js";
 import { internalAction, internalMutation } from "./_generated/server.js";
 

@@ -1,5 +1,5 @@
 {
-  "name": "@everos/convex",
+  "name": "@everos-ai/convex",
   "description": "Long-term memory for Convex apps, backed by EverOS Cloud. Drop-in remember/recall plus one-line memory for @convex-dev/agent.",
   "version": "0.1.0",
   "license": "Apache-2.0",

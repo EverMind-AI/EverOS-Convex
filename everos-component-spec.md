@@ -4,7 +4,7 @@ Build a Convex component that gives any Convex app (especially apps using `@conv
 
 ## Package
 
-- npm: `@everos/convex`
+- npm: `@everos-ai/convex`
 - component name: `everos`
 - Scaffold: `npx create-convex@latest --component` (uses get-convex/template-component; keep its build/publish/test setup)
 
@@ -178,7 +178,7 @@ Flag these to the component owner before shipping such a change:
 - **The agent helpers are in the main entry point**, so `@convex-dev/agent` and
   `zod` are required peers even for an app that only calls `remember` /
   `recall`: Convex resolves imports at push time, so a static import in the
-  entry is a hard dependency. Moving `asTool` to a `@everos/convex/agent`
+  entry is a hard dependency. Moving `asTool` to a `@everos-ai/convex/agent`
   subpath would make them genuinely optional, and is the right follow-up.
 - **`sent` rows that no extraction ever confirms are kept, not deleted.** The
   tempting shortcut is to assume a sibling extraction covered them, but when

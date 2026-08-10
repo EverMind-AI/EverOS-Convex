@@ -5,7 +5,7 @@
  * containing:
  *
  * ```ts
- * everos: import("@everos/convex/_generated/component.js").ComponentApi<"everos">;
+ * everos: import("@everos-ai/convex/_generated/component.js").ComponentApi<"everos">;
  * ```
  *
  * so this path has to resolve or `components.everos` silently degrades to

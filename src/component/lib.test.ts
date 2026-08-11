@@ -64,6 +64,8 @@ describe("remember + flush", () => {
         expect(body.session_id).toBe("user:u1");
         expect(body.messages[0].content).toBe("I love espresso");
         expect(body.messages[0].sender_id).toBe("u1");
+        // No senderName given — the field must be absent, not "undefined".
+        expect("sender_name" in body.messages[0]).toBe(false);
         return { data: { status: "queued", message_count: 1 } };
       },
       "/api/v2/memory/flush": (body) => {
@@ -105,8 +107,8 @@ describe("remember + flush", () => {
     await t.mutation(api.lib.rememberMessages, {
       userId: "u1",
       messages: [
-        { content: "my webhooks fail with 429s", role: "user" },
-        { content: "I've raised your limit to 10k/min", role: "assistant" },
+        { content: "my webhooks fail with 429s", role: "user", senderName: "Alex Chen" },
+        { content: "I've raised your limit to 10k/min", role: "assistant", senderName: "Mindy" },
       ],
       ...CREDS,
     });
@@ -118,6 +120,12 @@ describe("remember + flush", () => {
     expect(adds[0].messages.map((m: any) => [m.role, m.sender_id])).toEqual([
       ["user", "u1"],
       ["assistant", "assistant"],
+    ]);
+    // Display names ride along so extraction says "Alex Chen said…" instead
+    // of writing the opaque sender_id into fact text.
+    expect(adds[0].messages.map((m: any) => m.sender_name)).toEqual([
+      "Alex Chen",
+      "Mindy",
     ]);
     const rows = await t.run(async (ctx) => ctx.db.query("pending").collect());
     expect(rows).toHaveLength(0);

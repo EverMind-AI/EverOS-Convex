@@ -132,6 +132,10 @@ export type EverosMessage = {
   timestamp: number; // unix ms
   content: string;
   sender_id: string;
+  // Human-readable display name for the sender; the v2 API documents it for
+  // exactly the case where `sender_id` is opaque. Without it, extraction
+  // writes the raw sender_id into fact text.
+  sender_name?: string;
   tool_call_id?: string;
   tool_calls?: Array<{
     id: string;

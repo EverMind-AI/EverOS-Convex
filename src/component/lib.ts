@@ -79,6 +79,9 @@ export const remember = mutation({
     userId: v.string(),
     content: v.string(),
     role: v.optional(v.union(v.literal("user"), v.literal("assistant"))),
+    // Display name for the speaker, for when `userId` is an opaque id.
+    // Extraction writes it into fact text instead of the raw id.
+    senderName: v.optional(v.string()),
     sessionId: v.optional(v.string()),
     // When this was actually said. Without it the timestamp is synthesized at
     // flush time, which a retry can push minutes past the real moment — and
@@ -100,6 +103,7 @@ export const remember = mutation({
       userId: args.userId,
       content: args.content,
       role: args.role ?? "user",
+      senderName: args.senderName,
       sessionId: args.sessionId,
       appId: args.appId,
       projectId: args.projectId,
@@ -133,6 +137,9 @@ export const rememberMessages = mutation({
       v.object({
         content: v.string(),
         role: v.optional(v.union(v.literal("user"), v.literal("assistant"))),
+        // Display name for this message's speaker (user and assistant may
+        // both carry one — e.g. "Alex Chen" and "Mindy").
+        senderName: v.optional(v.string()),
         timestamp: v.optional(v.number()),
       }),
     ),
@@ -151,6 +158,7 @@ export const rememberMessages = mutation({
         userId: args.userId,
         content: message.content,
         role: message.role ?? "user",
+        senderName: message.senderName,
         sessionId: args.sessionId,
         appId: args.appId,
         projectId: args.projectId,
@@ -212,6 +220,7 @@ export const claimQueued = internalMutation({
         userId: v.string(),
         content: v.string(),
         role: v.union(v.literal("user"), v.literal("assistant")),
+        senderName: v.optional(v.string()),
         sessionId: v.optional(v.string()),
         appId: v.optional(v.string()),
         projectId: v.optional(v.string()),
@@ -234,6 +243,7 @@ export const claimQueued = internalMutation({
       userId: string;
       content: string;
       role: "user" | "assistant";
+      senderName?: string;
       sessionId?: string;
       appId?: string;
       projectId?: string;
@@ -290,6 +300,7 @@ export const claimQueued = internalMutation({
         userId: r.userId,
         content: r.content,
         role: r.role,
+        senderName: r.senderName,
         sessionId: r.sessionId,
         appId: r.appId,
         projectId: r.projectId,
@@ -503,6 +514,9 @@ export const flush = internalAction({
             // v2 attributes memories via per-message sender_id — without a
             // user-id sender on user messages, nothing is extracted for them.
             sender_id: item.role === "user" ? userId : "assistant",
+            // Display name, so extraction writes "Alex Chen said…" instead of
+            // the opaque sender_id.
+            ...(item.senderName ? { sender_name: item.senderName } : {}),
           })),
         });
         await ctx.runMutation(internal.lib.markSent, { ids });

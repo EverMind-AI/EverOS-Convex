@@ -12,6 +12,8 @@ import {
   mutation,
   query,
 } from "./_generated/server.js";
+import type { ActionCtx } from "./_generated/server.js";
+import { ensureEnglish } from "./translate.js";
 
 // ---------------------------------------------------------------------------
 // LLM providers — two DIFFERENT models so the two support tiers genuinely run
@@ -95,6 +97,11 @@ export const AGENTS = {
 
 // Any agent instance can read/delete threads (they're keyed by threadId).
 export const anyAgent = AGENTS.tier1.agent;
+
+// The demo customer's display name. Passed to EverOS as `senderName` so
+// extracted facts read "Alex Chen said…" instead of exposing the opaque
+// per-browser customerId UUID.
+const CUSTOMER_NAME = "Alex Chen";
 
 // Facts "remembered from a previous session" — seeded once per customer so the
 // demo starts as a returning customer with an existing memory profile.
@@ -204,6 +211,7 @@ export const seedReturningCustomer = action({
       await everos.remember(ctx, {
         userId: args.customerId,
         content: fact,
+        senderName: CUSTOMER_NAME,
         sessionId: "prior-session",
       });
     }
@@ -325,7 +333,15 @@ export const getCustomerMemory = action({
       if (m.kind === "episodic") push(m.summary ?? m.text, m.score, m.timestamp);
     }
 
-    return out.slice(0, 8);
+    // The console is an English surface, but cloud extraction can drift
+    // language (see translate.ts). Normalize before returning.
+    const top = out.slice(0, 8);
+    const english = await ensureEnglish(
+      ctx,
+      provider.chat(MODEL_TIER1),
+      top.map((f) => f.text),
+    );
+    return top.map((f, i) => ({ ...f, text: english[i] }));
   },
 });
 
@@ -395,6 +411,28 @@ function toRecallRows(
   }));
 }
 
+// toRecallRows + the ensure-English pass over every displayed string (memory
+// text and atomic facts), in one batched translation call. Applied at write
+// time so the reactive `recalls` table always holds English.
+async function toEnglishRecallRows(
+  ctx: ActionCtx,
+  recalled: Awaited<ReturnType<EverOS["recall"]>>,
+): Promise<ReturnType<typeof toRecallRows>> {
+  const rows = toRecallRows(recalled);
+  const texts: string[] = [];
+  for (const r of rows) {
+    texts.push(r.text);
+    for (const f of r.atomicFacts) texts.push(f.text);
+  }
+  const english = await ensureEnglish(ctx, provider.chat(MODEL_TIER1), texts);
+  let i = 0;
+  return rows.map((r) => ({
+    ...r,
+    text: english[i++],
+    atomicFacts: r.atomicFacts.map((f) => ({ ...f, text: english[i++] })),
+  }));
+}
+
 // Claim one message from the conversation's budget. A mutation so the
 // check and the increment are a single transaction.
 export const reserveMessageSlot = internalMutation({
@@ -460,10 +498,10 @@ export const sendMessage = action({
       topK: 5,
     });
 
-    // 2. Surface them in the console, reactively.
+    // 2. Surface them in the console, reactively (normalized to English).
     await ctx.runMutation(internal.chat.saveRecalls, {
       conversationId: args.conversationId,
-      memories: toRecallRows(recalled),
+      memories: await toEnglishRecallRows(ctx, recalled),
     });
     if (recalled.length > 0) {
       await ctx.runMutation(internal.chat.logEvent, {
@@ -503,8 +541,8 @@ export const sendMessage = action({
     await everos.rememberMessages(ctx, {
       userId: args.customerId,
       messages: [
-        { content: args.prompt, role: "user" },
-        { content: result.text, role: "assistant" },
+        { content: args.prompt, role: "user", senderName: CUSTOMER_NAME },
+        { content: result.text, role: "assistant", senderName: def.label },
       ],
     });
     await ctx.runMutation(internal.chat.logEvent, {
@@ -582,7 +620,7 @@ export const escalate = action({
     });
     await ctx.runMutation(internal.chat.saveRecalls, {
       conversationId: args.conversationId,
-      memories: toRecallRows(recalled),
+      memories: await toEnglishRecallRows(ctx, recalled),
     });
     // Takeover greeting. Passed via `messages` only (not `prompt`), so no fake
     // customer message is persisted to the thread.

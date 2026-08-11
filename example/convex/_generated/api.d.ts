@@ -8,9 +8,11 @@
  * @module
  */
 
+import type * as _tmpTranslateTest from "../_tmpTranslateTest.js";
 import type * as chat from "../chat.js";
 import type * as demo from "../demo.js";
 import type * as memoryTest from "../memoryTest.js";
+import type * as translate from "../translate.js";
 
 import type {
   ApiFromModules,
@@ -19,9 +21,11 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  _tmpTranslateTest: typeof _tmpTranslateTest;
   chat: typeof chat;
   demo: typeof demo;
   memoryTest: typeof memoryTest;
+  translate: typeof translate;
 }>;
 
 /**

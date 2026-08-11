@@ -16,6 +16,16 @@ function getCustomerId(): string {
 }
 const CUSTOMER_ID = getCustomerId();
 
+// The demo customer's display name (matches CUSTOMER_NAME in convex/chat.ts).
+const CUSTOMER_NAME = "Alex Chen";
+
+// Render-time backstop: memories extracted before senderName support (or by
+// older cloud behavior) may carry the raw customerId UUID in fact text.
+// Never show the opaque id to a viewer.
+function displayText(text: string): string {
+  return text.split(CUSTOMER_ID).join(CUSTOMER_NAME);
+}
+
 export default function App() {
   const conversation = useQuery(api.chat.getConversation, {
     customerId: CUSTOMER_ID,
@@ -299,7 +309,7 @@ function CustomerMemoryCard({ escalatedAt }: { escalatedAt: number | null }) {
           <ul className="fact-list">
             {facts.map((f, i) => (
               <li key={i}>
-                <span className="fact-text">{f.text}</span>
+                <span className="fact-text">{displayText(f.text)}</span>
                 {typeof f.score === "number" && (
                   <span className="mono score">{f.score.toFixed(2)}</span>
                 )}
@@ -374,7 +384,7 @@ function RecalledMemory({
         onClick={() => facts.length && setOpen((o) => !o)}
       >
         <span className="badge badge-kind">{mem.kind}</span>
-        <span className="recall-text">{mem.text}</span>
+        <span className="recall-text">{displayText(mem.text)}</span>
         {facts.length > 0 && (
           <span className="expander">
             {open ? "▾" : "▸"} {facts.length}
@@ -386,7 +396,7 @@ function RecalledMemory({
           <tbody>
             {facts.map((f, i) => (
               <tr key={i}>
-                <td className="fact-cell">{f.text}</td>
+                <td className="fact-cell">{displayText(f.text)}</td>
                 <td className="mono score">
                   {typeof f.score === "number" ? f.score.toFixed(2) : "—"}
                 </td>

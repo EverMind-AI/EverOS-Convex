@@ -44,6 +44,14 @@ export default defineSchema({
     ts: v.number(),
   }).index("by_conversation", ["conversationId"]),
 
+  // Cache for the console's ensure-English pass (see translate.ts). Keyed by
+  // the source text so each string is translated at most once; rows are tiny
+  // and the demo wipes them with clearAll.
+  translations: defineTable({
+    source: v.string(),
+    translated: v.string(),
+  }).index("by_source", ["source"]),
+
   // Memory pipeline activity feed (remembered / recalled / escalated / seeded)
   // — rendered as a live log in the console.
   memoryEvents: defineTable({

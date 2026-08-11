@@ -45,12 +45,36 @@ function scope(config: EverosConfig): Record<string, string> {
   };
 }
 
+// Every request carries the API key as a Bearer header, so a plaintext base
+// URL would put the key on the wire. Loopback hosts are exempt: self-hosted
+// EverOS in local development listens on plain http.
+function assertSafeBaseUrl(baseUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error(`EVEROS_BASE_URL is not a valid URL: ${baseUrl}`);
+  }
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "[::1]" ||
+    url.hostname === "::1";
+  if (url.protocol !== "https:" && !loopback) {
+    throw new Error(
+      `EVEROS_BASE_URL must use https (got ${url.protocol}//${url.hostname}). ` +
+        "The API key is sent as a Bearer header on every request.",
+    );
+  }
+}
+
 async function everosRequest<T>(
   config: EverosConfig,
   path: string,
   body: Record<string, unknown>,
 ): Promise<T> {
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  assertSafeBaseUrl(baseUrl);
   // Bounded well inside the ingest claim lease. A request that outlived the
   // lease would be reclaimed and re-sent while still in flight, so the same
   // content could reach EverOS twice.

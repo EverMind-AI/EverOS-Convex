@@ -403,6 +403,35 @@ describe("namespace scoping", () => {
   });
 });
 
+describe("base URL safety", () => {
+  test("refuses a plaintext base URL — the key rides every request", async () => {
+    const t = convexTest(schema, modules);
+    const fetchMock = mockEveros({});
+    await expect(
+      t.action(api.lib.recall, {
+        userId: "u1",
+        query: "q",
+        apiKey: "test-key",
+        baseUrl: "http://api.evil.example",
+      }),
+    ).rejects.toThrow(/https/);
+    // Refused before the request was made, not after.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("allows plain http for loopback (self-hosted local dev)", async () => {
+    const t = convexTest(schema, modules);
+    mockEveros({ "/api/v2/memory/search": () => searchResponse() });
+    const res = await t.action(api.lib.recall, {
+      userId: "u1",
+      query: "q",
+      apiKey: "test-key",
+      baseUrl: "http://127.0.0.1:8080",
+    });
+    expect(res).toEqual([]);
+  });
+});
+
 describe("recall", () => {
   test("searches EverOS and hydrates the local index", async () => {
     const t = convexTest(schema, modules);

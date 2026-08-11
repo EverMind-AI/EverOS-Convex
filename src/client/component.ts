@@ -73,6 +73,7 @@ export type ComponentApi<
         userId: string;
         content: string;
         role?: "user" | "assistant";
+        senderName?: string;
         sessionId?: string;
         timestamp?: number;
         apiKey: string;
@@ -92,6 +93,7 @@ export type ComponentApi<
         messages: Array<{
           content: string;
           role?: "user" | "assistant";
+          senderName?: string;
           timestamp?: number;
         }>;
         sessionId?: string;

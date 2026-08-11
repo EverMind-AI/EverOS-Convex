@@ -29,6 +29,11 @@ export default defineSchema({
     userId: v.string(),
     content: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant")),
+    // Human-readable display name for the speaker. `userId` is the attribution
+    // key and is often an opaque id (a UUID, an auth subject); without a name,
+    // EverOS writes that opaque id into extracted fact text ("1036ffce-…
+    // said their webhooks fail"). Sent to EverOS as `sender_name`.
+    senderName: v.optional(v.string()),
     sessionId: v.optional(v.string()),
     status: pendingStatus,
     attempts: v.number(),

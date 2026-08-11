@@ -102,6 +102,12 @@ export class EverOS {
       userId: string;
       content: string;
       role?: "user" | "assistant";
+      /**
+       * Display name for the speaker. `userId` is the attribution key and is
+       * often opaque (a UUID, an auth subject) — without a name, extraction
+       * writes that opaque id into fact text ("1036ffce-… said …").
+       */
+      senderName?: string;
       sessionId?: string;
       /** When this was said. Defaults to when it reaches EverOS. */
       timestamp?: number;
@@ -128,6 +134,8 @@ export class EverOS {
       messages: Array<{
         content: string;
         role?: "user" | "assistant";
+        /** Display name for this message's speaker (e.g. "Alex Chen", "Mindy"). */
+        senderName?: string;
         timestamp?: number;
       }>;
       sessionId?: string;

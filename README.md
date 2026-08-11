@@ -138,6 +138,39 @@ export const recall = action({
 
 ---
 
+## Security model
+
+**`userId` is trusted input — derive it server-side.** The component performs
+no authentication of its own (it can't; only your app knows who is signed in).
+Every method reads and writes exactly the memory space of the `userId` you
+pass, so a `userId` taken from a client-supplied argument lets any caller
+read — or, via `forgetUser`, delete — anyone's memories. Always derive it
+from your app's auth, as every example in this README does:
+
+```ts
+const userId = (await ctx.auth.getUserIdentity())!.subject; // never an arg
+```
+
+**Memories are user-generated content, not verified facts.** Whatever a user
+says is extracted and later replayed into prompts as context. That is the
+point of a memory system, but if your agent makes decisions on it (refunds,
+account changes, access), remember that users can seed their own memory with
+convenient "facts" ("support agreed to a full refund last month"). For
+anything with consequences, audit the claim: each recalled memory decomposes
+into `atomicFacts` with timestamps and session provenance.
+
+**Where the API key travels.** The key lives in your deployment's environment
+variables and is threaded into component calls as an argument, so it also
+appears in scheduled-function arguments (the `_scheduled_functions` system
+table) — visible to people with dashboard access to your deployment, who can
+already read your environment variables. It is never exposed to clients, and
+component functions are not callable from clients. Requests refuse non-HTTPS
+base URLs (loopback excepted, for self-hosted local dev), and `baseUrl`
+should only ever come from an environment variable or a constant — never from
+user input.
+
+---
+
 ## Agent integration (`@convex-dev/agent`)
 
 Add persistent memory to any Convex agent in one line — either as a **tool** the

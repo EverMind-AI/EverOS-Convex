@@ -13,13 +13,13 @@
     "evermind",
     "llm"
   ],
-  "homepage": "https://github.com/EverMind-AI/everos-convex#readme",
+  "homepage": "https://github.com/EverMind-AI/EverOS-Convex#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EverMind-AI/everos-convex.git"
+    "url": "git+https://github.com/EverMind-AI/EverOS-Convex.git"
   },
   "bugs": {
-    "url": "https://github.com/EverMind-AI/everos-convex/issues"
+    "url": "https://github.com/EverMind-AI/EverOS-Convex/issues"
   },
   "author": "EverMind (https://evermind.ai)",
   "type": "module",
@@ -66,6 +66,9 @@
   },
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js",
+  "dependencies": {
+    "convex-helpers": "^0.1.103"
+  },
   "peerDependencies": {
     "@convex-dev/agent": "^0.6.0",
     "convex": "^1.32.0",

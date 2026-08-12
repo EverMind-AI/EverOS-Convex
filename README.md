@@ -111,8 +111,9 @@ export const recall = action({
 
 | Method | Kind | Description |
 | --- | --- | --- |
-| `everos.remember(ctx, { userId, content, role?, sessionId?, timestamp? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
-| `everos.rememberMessages(ctx, { userId, messages, sessionId? })` | mutation | Remember a whole turn (prompt **and** reply) in one call |
+| `everos.remember(ctx, { userId, content, role?, senderName?, sessionId?, timestamp? })` | mutation | Enqueue content; flushed to EverOS asynchronously |
+| | | Pass `senderName` whenever `userId` is opaque (a UUID, an auth subject). It is the attribution key, and without a display name extraction writes it into the fact text itself — `"1036ffce-… said their webhooks fail"`. |
+| `everos.rememberMessages(ctx, { userId, messages, sessionId? })` | mutation | Remember a whole turn (prompt **and** reply) in one call; each message takes its own `senderName` |
 | `everos.recall(ctx, { userId, query, topK?, kind?, includeRecent? })` | action | Retrieve relevant memories, ranked (plus not-yet-extracted content marked `pending`) |
 | | | `topK` bounds the ranked episodes only. Profiles ride along, and up to 5 `pending` items may be appended, so size prompts from the returned array rather than from `topK`. |
 | `everos.getProfile(ctx, { userId })` | action | Fetch the user's profile / semantic memory |
@@ -123,9 +124,9 @@ export const recall = action({
 
 > **How ingestion works:** `remember` is a mutation (mutations can't make
 > external calls), so it writes to a durable `pending` queue and schedules a
-> `flush` action that POSTs to EverOS. EverOS extracts memories
-> asynchronously, so the local `memories` index is hydrated from retrieval
-> results rather than at ingest time.
+> `flush` action that POSTs to EverOS. A queue row is deleted once EverOS
+> confirms it was extracted — the component keeps no local copy of your
+> memories, and `recall` / `listMemories` always read EverOS itself.
 >
 > The component also drives extraction itself, because EverOS Cloud does not
 > extract on a schedule of its own: without that step ingested content would
@@ -290,9 +291,10 @@ ingest takes ~10s to reach the accumulation buffer, and a flush before that is
 a silent no-op — EverOS Cloud does not extract on its own schedule).
 Extraction buffers are **session-scoped**, so each `(user, session)` pair is
 flushed individually; once a flush reports `extracted`, the pair's queue rows
-are retired from the read-your-writes merge. Because EverOS extracts memories
-asynchronously (ingest returns a queue status, not a memory id), the local `memories`
-index is hydrated from retrieval results, not at ingest time.
+are deleted. Nothing else is stored locally: the queue exists to survive a
+failed ingest and to answer "what did I just say" while extraction catches up,
+not as a mirror of your memories. Rows that never made it are kept as `failed`,
+because that is the one thing worth reporting through `getPendingStatus`.
 
 ## Local development
 

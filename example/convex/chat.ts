@@ -96,6 +96,11 @@ export const AGENTS = {
 // Any agent instance can read/delete threads (they're keyed by threadId).
 export const anyAgent = AGENTS.tier1.agent;
 
+// The demo customer's display name. Passed to EverOS as `senderName` so
+// extracted facts read "Alex Chen said…" instead of exposing the opaque
+// per-browser customerId UUID.
+const CUSTOMER_NAME = "Alex Chen";
+
 // Facts "remembered from a previous session" — seeded once per customer so the
 // demo starts as a returning customer with an existing memory profile.
 const PRIOR_SESSION_FACTS = [
@@ -204,6 +209,7 @@ export const seedReturningCustomer = action({
       await everos.remember(ctx, {
         userId: args.customerId,
         content: fact,
+        senderName: CUSTOMER_NAME,
         sessionId: "prior-session",
       });
     }
@@ -503,8 +509,8 @@ export const sendMessage = action({
     await everos.rememberMessages(ctx, {
       userId: args.customerId,
       messages: [
-        { content: args.prompt, role: "user" },
-        { content: result.text, role: "assistant" },
+        { content: args.prompt, role: "user", senderName: CUSTOMER_NAME },
+        { content: result.text, role: "assistant", senderName: def.label },
       ],
     });
     await ctx.runMutation(internal.chat.logEvent, {

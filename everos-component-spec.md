@@ -38,7 +38,7 @@ export default defineComponent("everos", {
 ## Component functions (public, all with validators)
 
 - `remember` (mutation): enqueue content + userId + optional metadata; schedule flush action
-- `flush` (internal action): POST queued items to the EverOS v2 ingest API (batched per user+session; a session id is always sent — sessionless remembers share a per-user default session `user:{userId}`), then schedule `runExtraction`, which calls EverOS `/flush` with backoff-retry until extraction lands and retires the pending rows (v2 ingest is async with a ~10s landing window, and EverOS Cloud does not extract without a flush)
+- `flush` (internal action): POST queued items to the EverOS v2 ingest API (batched per user+session; a session id is always sent — sessionless remembers share a per-user default session `user:{userId}`), then schedule `runExtraction`, which nudges EverOS with `/flush` (closes an open-ended tail; `no_extraction` just means nothing is pending) and confirms extraction by reading the session's episodes back with `/get` + `filters.session_id`, retrying with backoff until one dated at or after this batch's messages exists, then retires the pending rows (v2 ingest is async; a self-contained segment is extracted ~8-10s after ingest without any flush)
 - `recall` (action): query the EverOS v2 search API { userId, query, topK, kind?, includeRecent? } → returns extracted memories with scores plus not-yet-extracted content marked `pending: true`
 - `getProfile` (action): fetch user's semantic/profile memory from EverOS
 - `forgetSession` (action): delete one session's memories in EverOS + matching local rows (the v2 API deletes by scope — user / agent / session — there is no single-memory delete)
@@ -100,9 +100,11 @@ flush (action)
    |-- markSent (mutation)    -> `sent`, schedule runExtraction
    |   or markFailed          -> back to `queued` (or `failed`), schedule retry
    |
-runExtraction (action)        POST /memory/flush, retry 20/40/80s
+runExtraction (action)        POST /memory/flush (close an open tail), then
+   |                          POST /memory/get filtered by session to confirm
+   |                          an episode exists; retry 20/40/80/160/320s
    |-- markExtracted          delete the row: EverOS now holds the memory
-   |   or markExtractionStalled  record why it is ingested but not searchable
+   |   or markExtractionStalled  record why it is ingested but not extracted
 ```
 
 Four properties this buys, each of which had a failing test before it existed:
@@ -122,11 +124,17 @@ Four properties this buys, each of which had a failing test before it existed:
 - **Retries actually happen.** A requeued row schedules its own retry
   (5s/30s/2m/10m). Requeuing without scheduling leaves it waiting for a
   `remember` that may never come.
-- **Extraction is driven, not awaited.** EverOS Cloud does not extract on its
-  own schedule: without a `flush`, ingested messages sit in the accumulation
-  buffer indefinitely. Ingest also takes ~10s to land, and a flush inside that
-  window returns `no_extraction`, indistinguishable from "nothing to do". So
-  extraction is scheduled 15s out and retried at 20/40/80s.
+- **Extraction is confirmed, not assumed.** Since 2026-08-20 EverOS Cloud
+  extracts a self-contained segment at ingest time (its boundary detector
+  reports the tail as interpretable on its own); only an open-ended tail
+  waits for more messages or a `/flush`. So `/flush` answers `no_extraction`
+  in the common case, and that is not a signal that anything is missing. The
+  component therefore flushes (to close open tails) and then reads the
+  session's episodes back with `/get`, which sees an episode as soon as it is
+  extracted; an episode dated at or after this batch's earliest message
+  confirms it. Ingest-to-extracted is ~8-10s with a long tail (>100s
+  measured; 2.5-4.5 minutes seen twice on 2026-09-15), so the check runs 15s
+  out and retries at 20/40/80/160/320s, about 10.5 minutes in all.
 
 **Read-your-writes.** The server can return `unprocessed_messages`, but only
 when the search carries `filters.session_id` as a top-level scalar, which a
@@ -145,15 +153,18 @@ are kept deliberately, as the only record that content never made it.
 
 Flag these to the component owner before shipping such a change:
 
-- If Cloud starts **auto-extracting** on its own boundary detection, the
-  component's flush scheduling becomes redundant (harmless but wasteful) and
-  its "extracted" state write-back may lag reality.
+- Cloud **auto-extracts** self-contained segments since 2026-08-20 (this is
+  what moved confirmation from the flush status to the `/get` read-back). If
+  `/get` stops honouring `filters.session_id`, or an episode's `timestamp`
+  stops being its last message's, the read-back can no longer tell this
+  batch's episode from an older one in the same session.
 - If `unprocessed_messages` starts returning for owner-scoped searches, the
   local pending merge could be replaced by it (simpler, and ranked).
 - If a **single-memory delete** appears, `forget(everosMemoryId)` can return —
   it was removed only because v2 deletes by scope.
-- If the ingest **landing window** grows past ~80s, the retry ladder needs
-  extending.
+- If the ingest-to-extracted window grows past ~10.5 minutes (15 + 20 + 40 +
+  80 + 160 + 320s), the retry ladder needs extending; rows past it are
+  reported as stalled, not lost.
 - The `mode: "chat" | "agent"` field is wired through `addMemories` but unused
   in v0.1; agent memory ships once Cloud produces `agent_case` / `agent_skill`.
 

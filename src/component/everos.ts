@@ -147,8 +147,9 @@ export type EverosMessage = {
 type AddResponse = {
   request_id?: string;
   data: {
-    // "queued" on the live cloud; the ingest lands asynchronously (~10s),
-    // so an immediate flush is a no-op — see lib.ts scheduling.
+    // "queued" on the live cloud; the ingest lands and is extracted
+    // asynchronously (~8-10s), so an immediate flush finds nothing pending —
+    // see lib.ts for how extraction is confirmed.
     status: string;
     message_count: number;
   };
@@ -235,10 +236,11 @@ type DeleteResponse = {
 
 /**
  * Ingest messages into a session's accumulation buffer. Processing is
- * asynchronous: the cloud replies "queued" and the messages land in the
- * buffer shortly after (there is no task id to poll — see lib.ts for the
- * delayed-flush strategy).
- *
+ * asynchronous: the cloud replies "queued", the messages land in the buffer
+ * shortly after, and EverOS runs boundary detection on them. A segment the
+ * detector judges self-contained is extracted right away, with no flush; an
+ * open-ended tail waits for more messages or for `/flush`. There is no task
+ * id to poll — see lib.ts for how extraction is confirmed.
  */
 export async function addMemories(
   config: EverosConfig,
@@ -256,11 +258,13 @@ export async function addMemories(
 }
 
 /**
- * Force extraction of a session's accumulated messages. Returns
- * "no_extraction" both when there is nothing to extract AND when the ingest
- * hasn't landed in the buffer yet (~10s after add) — callers must retry.
- * The cloud does not extract on its own schedule; without a flush, ingested
- * messages sit in the buffer indefinitely.
+ * Force-close a session's open tail into a memory now, instead of waiting for
+ * more messages. Returns "extracted" when that closed something, and
+ * "no_extraction" when there was nothing pending: the ingest has not landed
+ * yet, OR EverOS already extracted it on its own (a self-contained segment is
+ * extracted at ingest time, since 2026-08-20). So "no_extraction" is not a
+ * failure signal and does not mean the content is missing; confirm landing
+ * with `getSessionEpisodes` instead.
  */
 export async function flushExtraction(
   config: EverosConfig,
@@ -327,6 +331,39 @@ export async function getEpisodes(
     episodes: data.data.episodes ?? [],
     totalCount: data.data.total_count ?? 0,
   };
+}
+
+/**
+ * The episodes extracted from one session, newest first. This is the landing
+ * probe: `/get` is a structured read that sees an episode as soon as it is
+ * extracted (the search index lags it by seconds), and `filters.session_id`
+ * narrows it to the session an ingest went into. A `sinceTs` (epoch ms) keeps
+ * only episodes whose timestamp is at or after it; an episode's timestamp is
+ * its last message's, so an episode built from messages sent at or after
+ * `sinceTs` always qualifies, and earlier episodes of the same session do not.
+ */
+export async function getSessionEpisodes(
+  config: EverosConfig,
+  args: { userId: string; sessionId: string; sinceTs?: number },
+): Promise<EverosEpisode[]> {
+  const data = await everosRequest<GetResponse>(config, "/api/v2/memory/get", {
+    ...scope(config),
+    memory_type: "episode",
+    user_id: args.userId,
+    // A top-level scalar: the only shape the filter accepts for session_id.
+    filters: { session_id: args.sessionId },
+    page: 1,
+    page_size: 20,
+    sort_by: "timestamp",
+    sort_order: "desc",
+  });
+  const episodes = data.data.episodes ?? [];
+  if (args.sinceTs === undefined) return episodes;
+  const since = args.sinceTs;
+  return episodes.filter((e) => {
+    const ts = normalizeTimestamp(e.timestamp);
+    return ts !== undefined && ts >= since;
+  });
 }
 
 /** Fetch a user's profile / semantic memory. */

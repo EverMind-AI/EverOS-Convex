@@ -17,6 +17,7 @@ import {
   deleteSessionMemories,
   deleteUserMemories,
   flushExtraction,
+  getSessionEpisodes,
   getProfileMemory,
   memoryTypeToKind,
   normalizeTimestamp,
@@ -502,14 +503,20 @@ export const flush = internalAction({
         appId: group[0].appId ?? config.appId,
         projectId: group[0].projectId ?? config.projectId,
       };
+      // The caller's timestamp when given; otherwise now, offset to preserve
+      // ordering within the batch. Computed once: the extraction probe needs
+      // the earliest of them to tell this batch's episode from older ones.
+      const now = Date.now();
+      const timestamps = group.map(
+        (item, i) => item.saidAt ?? now - (group.length - i),
+      );
+      const sinceTs = Math.min(...timestamps);
       try {
         await addMemories(groupConfig, {
           sessionId,
           messages: group.map((item, i) => ({
             role: item.role,
-            // The caller's timestamp when given; otherwise now, offset to
-            // preserve ordering within the batch.
-            timestamp: item.saidAt ?? Date.now() - (group.length - i),
+            timestamp: timestamps[i],
             content: item.content,
             // v2 attributes memories via per-message sender_id — without a
             // user-id sender on user messages, nothing is extracted for them.
@@ -521,9 +528,9 @@ export const flush = internalAction({
         });
         await ctx.runMutation(internal.lib.markSent, { ids });
         sent += group.length;
-        // Don't flush inline: an ingest takes ~10s to land in the
-        // accumulation buffer server-side, and a flush before that is a
-        // silent no-op. Schedule past the landing window instead.
+        // Don't confirm inline: an ingest takes ~8-10s to land and be
+        // extracted server-side, and a probe before that finds nothing.
+        // Schedule past the landing window instead.
         await ctx.scheduler.runAfter(
           EXTRACTION_DELAY_MS,
           internal.lib.runExtraction,
@@ -535,6 +542,7 @@ export const flush = internalAction({
             sessionId,
             userId,
             ids,
+            sinceTs,
           },
         );
       } catch (e) {
@@ -570,10 +578,11 @@ export const flush = internalAction({
 });
 
 const EXTRACTION_DELAY_MS = 15_000;
-// The ingest to buffer landing window is ~10s under normal load but can
-// stretch; a flush during it returns "no_extraction" (a silent no-op).
-// Retry with backoff until EverOS reports an actual extraction.
-const EXTRACTION_RETRY_DELAYS_MS = [20_000, 40_000, 80_000];
+// Ingest to extracted is ~8-10s under normal load but has a long tail: over
+// 100s has been measured, and 2.5-4.5 minutes seen twice in one afternoon.
+// Retry with backoff until the episode is readable; the ladder covers ~10.5
+// minutes in all, and only past that is a row reported as stalled.
+const EXTRACTION_RETRY_DELAYS_MS = [20_000, 40_000, 80_000, 160_000, 320_000];
 
 export const runExtraction = internalAction({
   args: {
@@ -586,6 +595,9 @@ export const runExtraction = internalAction({
     userId: v.string(),
     // The rows this extraction covers, so only they are retired.
     ids: v.array(v.id("pending")),
+    // The earliest message timestamp in the ingest these rows went out in.
+    // An episode at or after it is this batch's, not an older one's.
+    sinceTs: v.optional(v.number()),
     attempt: v.optional(v.number()),
   },
   returns: v.null(),
@@ -597,27 +609,53 @@ export const runExtraction = internalAction({
       projectId: args.projectId,
     };
     const attempt = args.attempt ?? 0;
-    // Captured before the call: anything ingested by now is in the buffer this
-    // extraction drains, so a success covers it.
+    // Captured before the calls: anything ingested by now is in the buffer a
+    // flush drains, so a flush-confirmed extraction covers it.
     const coveredBefore = Date.now();
-    let extracted = false;
+    let flushed = false;
+    let landed = false;
     let lastError: string | undefined;
+
+    // Step 1: close the session's open tail, if it has one. EverOS extracts a
+    // self-contained segment on its own at ingest time, but an open-ended one
+    // (a question mid-conversation, say) waits for more messages, and this is
+    // what makes it extract now. "extracted" here is a confirmation in its
+    // own right. "no_extraction" is not a failure: it also means EverOS
+    // already extracted everything, which is the common case.
     try {
       const { status } = await flushExtraction(config, {
         sessionId: args.sessionId,
       });
-      // "no_extraction" also means the ingest had not landed in the buffer yet.
-      extracted = status === "extracted";
+      flushed = status === "extracted";
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
     }
 
-    if (extracted) {
+    // Step 2: read back. `/get` sees an episode as soon as it exists, so an
+    // episode of this session dated at or after this batch's messages means
+    // the content is extracted and recall will return it from EverOS.
+    if (!flushed) {
+      try {
+        const episodes = await getSessionEpisodes(config, {
+          userId: args.userId,
+          sessionId: args.sessionId,
+          sinceTs: args.sinceTs,
+        });
+        landed = episodes.length > 0;
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+      }
+    }
+
+    if (flushed || landed) {
       await ctx.runMutation(internal.lib.markExtracted, {
         ids: args.ids,
-        userId: args.userId,
-        sessionId: args.sessionId,
-        coveredBefore,
+        // A flush drains the whole session buffer, so it covers sibling rows
+        // ingested before it ran. A read-back only proves this batch landed;
+        // siblings confirm themselves through their own extraction run.
+        ...(flushed
+          ? { userId: args.userId, sessionId: args.sessionId, coveredBefore }
+          : {}),
       });
       return null;
     }
@@ -639,8 +677,8 @@ export const runExtraction = internalAction({
       ids: args.ids,
       error:
         lastError ??
-        "EverOS reported no extraction after repeated flushes; the content is " +
-          "ingested but not confirmed searchable.",
+        "EverOS has not produced a memory for this content after repeated " +
+          "checks; it is ingested but not confirmed extracted.",
     });
     return null;
   },

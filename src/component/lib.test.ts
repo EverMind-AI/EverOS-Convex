@@ -131,7 +131,7 @@ describe("remember + flush", () => {
     expect(rows).toHaveLength(0);
   });
 
-  test("retries flush while the ingest hasn't landed (no_extraction)", async () => {
+  test("retries while the ingest hasn't landed (flush no_extraction, get empty)", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
     let flushCalls = 0;
@@ -141,12 +141,16 @@ describe("remember + flush", () => {
       }),
       "/api/v2/memory/flush": () => {
         flushCalls++;
-        // First flush hits the ingest landing window (a silent no-op);
-        // the retry succeeds.
+        // First flush hits the ingest landing window (nothing pending yet);
+        // the retry finds an open tail and closes it.
         return {
           data: { status: flushCalls === 1 ? "no_extraction" : "extracted" },
         };
       },
+      // Nothing extracted yet either, so the read-back cannot confirm.
+      "/api/v2/memory/get": () => ({
+        data: { episodes: [], profiles: [], total_count: 0, count: 0 },
+      }),
     });
 
     const { pendingId } = await t.mutation(api.lib.remember, {
@@ -159,6 +163,142 @@ describe("remember + flush", () => {
     expect(flushCalls).toBe(2);
     const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
     expect(row).toBeNull();
+  });
+
+  test("confirms via read-back when EverOS extracted on its own (flush never says so)", async () => {
+    // Since 2026-08-20 EverOS Cloud extracts a self-contained segment at
+    // ingest time, so a later flush finds nothing pending and answers
+    // "no_extraction" forever. That is not a failure: the memory exists, and
+    // /get with a session filter sees it. This is the common production path.
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const saidAt = 1_700_000_000_000;
+    const getBodies: any[] = [];
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+      "/api/v2/memory/flush": () => ({ data: { status: "no_extraction" } }),
+      "/api/v2/memory/get": (body) => {
+        getBodies.push(body);
+        return {
+          data: {
+            episodes: [
+              {
+                id: "ep1",
+                user_id: "u1",
+                session_id: "s1",
+                // The episode's timestamp is its last message's.
+                timestamp: new Date(saidAt + 5_000).toISOString(),
+                episode: "Alex said he is on the Pro plan.",
+              },
+            ],
+            profiles: [],
+            total_count: 1,
+            count: 1,
+          },
+        };
+      },
+    });
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "I'm on the Pro plan",
+      sessionId: "s1",
+      timestamp: saidAt,
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // The probe is a structured read of this session's episodes, not a search.
+    expect(getBodies).toHaveLength(1);
+    expect(getBodies[0].memory_type).toBe("episode");
+    expect(getBodies[0].user_id).toBe("u1");
+    expect(getBodies[0].filters).toEqual({ session_id: "s1" });
+    // Confirmed on the first probe: no stalled row, no false failure.
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    expect(row).toBeNull();
+    const status = await t.query(api.lib.getPendingStatus, { userId: "u1" });
+    expect(status).toEqual({ unextracted: 0, failed: 0, capped: false });
+  });
+
+  test("an older episode of the same session does not confirm a newer batch", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const saidAt = 1_700_000_000_000;
+    let getCalls = 0;
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+      "/api/v2/memory/flush": () => ({ data: { status: "no_extraction" } }),
+      "/api/v2/memory/get": () => {
+        getCalls++;
+        const older = {
+          id: "ep-old",
+          session_id: "s1",
+          timestamp: new Date(saidAt - 60_000).toISOString(),
+        };
+        const newer = {
+          id: "ep-new",
+          session_id: "s1",
+          timestamp: new Date(saidAt + 1_000).toISOString(),
+        };
+        // First probe: only yesterday's episode exists. Second: ours landed.
+        return {
+          data: {
+            episodes: getCalls === 1 ? [older] : [newer, older],
+            profiles: [],
+          },
+        };
+      },
+    });
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "today's news",
+      sessionId: "s1",
+      timestamp: saidAt,
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(getCalls).toBe(2);
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    expect(row).toBeNull();
+  });
+
+  test("reports a stalled extraction instead of failing silently or lying", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    let getCalls = 0;
+    mockEveros({
+      "/api/v2/memory/add": () => ({
+        data: { status: "queued", message_count: 1 },
+      }),
+      "/api/v2/memory/flush": () => ({ data: { status: "no_extraction" } }),
+      "/api/v2/memory/get": () => {
+        getCalls++;
+        return { data: { episodes: [], profiles: [] } };
+      },
+    });
+
+    const { pendingId } = await t.mutation(api.lib.remember, {
+      userId: "u1",
+      content: "never extracted",
+      ...CREDS,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // Initial probe + 5 retries (~10.5 minutes), then give up — but keep the
+    // row, so getPendingStatus can say what happened.
+    expect(getCalls).toBe(6);
+    const row = await t.run(async (ctx) => ctx.db.get(pendingId as Id<"pending">));
+    expect(row?.status).toBe("sent");
+    expect(row?.lastError).toMatch(/not confirmed extracted/);
+    const status = await t.query(api.lib.getPendingStatus, { userId: "u1" });
+    expect(status.unextracted).toBe(1);
+    expect(status.lastError).toMatch(/not confirmed extracted/);
   });
 
   test("rejects empty content with a clear error", async () => {
@@ -248,6 +388,9 @@ describe("remember + flush", () => {
           data: { status: flushCalls === 1 ? "extracted" : "no_extraction" },
         };
       },
+      // The first flush already retired both rows via coveredBefore; if the
+      // second run still probes, it must not find a fresh episode to lean on.
+      "/api/v2/memory/get": () => ({ data: { episodes: [], profiles: [] } }),
     });
 
     await t.mutation(api.lib.remember, {

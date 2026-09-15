@@ -128,9 +128,10 @@ export const recall = action({
 > confirms it was extracted — the component keeps no local copy of your
 > memories, and `recall` / `listMemories` always read EverOS itself.
 >
-> The component also drives extraction itself, because EverOS Cloud does not
-> extract on a schedule of its own: without that step ingested content would
-> sit in its buffer and never become searchable.
+> Extraction is asynchronous on the EverOS side: a self-contained segment is
+> extracted within seconds of ingest, an open-ended one waits for more
+> messages. The component nudges the latter with a flush, then reads the
+> session's episodes back until it can confirm the content is extracted.
 >
 > **If something looks missing**, `getPendingStatus` says whether it is still
 > in flight or actually failed. A rejected API key shows up there as
@@ -285,12 +286,15 @@ The component stays pure and portable; secrets live in the app.
 **Ingestion is a durable, asynchronous pipeline.** `remember` is a mutation
 (mutations can't call external APIs), so it writes to a `pending` queue and
 schedules a `flush` action. `flush` batches queued items per `(userId,
-sessionId)` into one EverOS ingest call, then schedules `runExtraction`, which
-calls EverOS's `/flush` with backoff-retry until extraction actually lands (an
-ingest takes ~10s to reach the accumulation buffer, and a flush before that is
-a silent no-op — EverOS Cloud does not extract on its own schedule).
+sessionId)` into one EverOS ingest call, then schedules `runExtraction` 15s
+out. EverOS extracts a self-contained segment on its own a few seconds after
+ingest, so `runExtraction` first calls EverOS's `/flush` (which closes an
+open-ended tail, and otherwise answers `no_extraction` because there is
+nothing left pending), then reads the session's episodes back with `/get` to
+confirm one exists for this batch, retrying with backoff for about ten
+minutes to cover the long tail.
 Extraction buffers are **session-scoped**, so each `(user, session)` pair is
-flushed individually; once a flush reports `extracted`, the pair's queue rows
+confirmed individually; once its episode is readable, the pair's queue rows
 are deleted. Nothing else is stored locally: the queue exists to survive a
 failed ingest and to answer "what did I just say" while extraction catches up,
 not as a mirror of your memories. Rows that never made it are kept as `failed`,

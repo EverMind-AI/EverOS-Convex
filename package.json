@@ -70,7 +70,7 @@
     "convex-helpers": "^0.1.103"
   },
   "peerDependencies": {
-    "@convex-dev/agent": "^0.6.0",
+    "@convex-dev/agent": "^0.6.0 || ^0.7.0",
     "convex": "^1.32.0",
     "zod": "^3.24.0 || ^4.0.0"
   },

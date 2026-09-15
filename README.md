@@ -28,6 +28,8 @@ npm install @everos-ai/convex @convex-dev/agent zod
 > them for `asTool`, and Convex resolves imports when it pushes your code, so
 > they are required even if you only call `remember` / `recall`. Splitting the
 > agent helpers into their own entry point is tracked for a later release.
+> Both `@convex-dev/agent` 0.6 (AI SDK v6) and 0.7 (AI SDK v7) are supported;
+> npm installs the matching `ai` packages as its peers.
 
 ### 1. Register the component
 

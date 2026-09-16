@@ -159,8 +159,10 @@ export const logEvent = internalMutation({
     ),
     detail: v.string(),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     await ctx.db.insert("memoryEvents", { ...args, ts: Date.now() });
+    return null;
   },
 });
 
@@ -194,8 +196,10 @@ export const ensureConversation = mutation({
 
 export const markSeeded = internalMutation({
   args: { conversationId: v.id("conversations") },
+  returns: v.null(),
   handler: async (ctx, args) => {
     await ctx.db.patch(args.conversationId, { seeded: true });
+    return null;
   },
 });
 
@@ -368,6 +372,7 @@ export const saveRecalls = internalMutation({
       }),
     ),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("recalls")
@@ -387,6 +392,7 @@ export const saveRecalls = internalMutation({
         ts: Date.now(),
       });
     }
+    return null;
   },
 });
 
@@ -565,12 +571,14 @@ export const getConvInternal = internalQuery({
 
 export const setEscalated = internalMutation({
   args: { conversationId: v.id("conversations"), tier2ThreadId: v.string() },
+  returns: v.null(),
   handler: async (ctx, args) => {
     await ctx.db.patch(args.conversationId, {
       currentTier: "tier2",
       tier2ThreadId: args.tier2ThreadId,
       escalatedAt: Date.now(),
     });
+    return null;
   },
 });
 

@@ -116,6 +116,25 @@ export const recall = action({
 });
 ```
 
+`recall` returns ranked memories with provenance, plus anything remembered in
+the last few seconds that EverOS has not finished extracting yet:
+
+```ts
+// abridged: every item also carries everosMemoryId and userId
+[
+  {
+    kind: "episodic",
+    text: "Alex Chen said he is on the Pro plan, billed annually, and asked to be contacted by email.",
+    score: 0.41,
+    timestamp: 1789509522956,
+    sessionId: "support-2026-09",
+    atomicFacts: [{ text: "Alex Chen is on the Pro plan.", score: 0.41, timestamp: 1789509522956 }],
+  },
+  { kind: "profile", text: "Prefers email over phone.; Uses a Node.js stack on Vercel." },
+  { kind: "episodic", text: "Our webhooks started failing again this morning.", pending: true },
+]
+```
+
 ### API
 
 | Method | Kind | Description |
@@ -131,21 +150,13 @@ export const recall = action({
 | `everos.getPendingStatus(ctx, { userId })` | query | Whether anything is still on its way to EverOS, and why if it is stuck |
 | `everos.listMemories(ctx, { userId, page?, pageSize? })` | action | Page through everything EverOS holds for a user, newest first |
 
-> **How ingestion works:** `remember` is a mutation (mutations can't make
-> external calls), so it writes to a durable `pending` queue and schedules a
-> `flush` action that POSTs to EverOS. A queue row is deleted once EverOS
-> confirms it was extracted — the component keeps no local copy of your
-> memories, and `recall` / `listMemories` always read EverOS itself.
->
-> Extraction is asynchronous on the EverOS side: a self-contained segment is
-> extracted within seconds of ingest, an open-ended one waits for more
-> messages. The component nudges the latter with a flush, then reads the
-> session's episodes back until it can confirm the content is extracted.
->
 > **If something looks missing**, `getPendingStatus` says whether it is still
 > in flight or actually failed. A rejected API key shows up there as
 > `lastError`; without checking it, a bad key is indistinguishable from
-> extraction being slow.
+> extraction being slow. The component keeps no copy of your memories: queue
+> rows are deleted once EverOS has extracted them, and `recall` /
+> `listMemories` always read EverOS itself. Internals are in
+> [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
 
@@ -260,15 +271,8 @@ conversations, the agent console state, and the customers' EverOS memories.
 
 ## Testing
 
-Component functions are tested with [`convex-test`](https://docs.convex.dev/testing/convex-test)
-and a mocked EverOS API:
-
-```bash
-npm test
-```
-
-To test the component inside your own app, register it with a `convexTest`
-instance:
+To test the component inside your own app, register it with a
+[`convex-test`](https://docs.convex.dev/testing/convex-test) instance:
 
 ```ts
 import { convexTest } from "convex-test";
@@ -281,43 +285,11 @@ everos.register(t);
 
 ---
 
-## Design notes
+## Contributing
 
-**Why the API key is passed as an argument, not read from `process.env` inside
-the component.** Convex's docs sketch a typed `env` block on `defineComponent`,
-but reading `process.env` *inside* a component is not reliable. Following
-Convex's own reference component ([`@convex-dev/twilio`](https://github.com/get-convex/twilio)),
-this component keeps `convex.config.ts` as a plain `defineComponent("everos")`
-and the app-side `EverOS` client resolves `EVEROS_API_KEY` / `EVEROS_BASE_URL`
-(from its options or `process.env`) and threads them into every action call.
-The component stays pure and portable; secrets live in the app.
-
-**Ingestion is a durable, asynchronous pipeline.** `remember` is a mutation
-(mutations can't call external APIs), so it writes to a `pending` queue and
-schedules a `flush` action. `flush` batches queued items per `(userId,
-sessionId)` into one EverOS ingest call, then schedules `runExtraction` 15s
-out. EverOS extracts a self-contained segment on its own a few seconds after
-ingest, so `runExtraction` first calls EverOS's `/flush` (which closes an
-open-ended tail, and otherwise answers `no_extraction` because there is
-nothing left pending), then reads the session's episodes back with `/get` to
-confirm one exists for this batch, retrying with backoff for about ten
-minutes to cover the long tail.
-Extraction buffers are **session-scoped**, so each `(user, session)` pair is
-confirmed individually; once its episode is readable, the pair's queue rows
-are deleted. Nothing else is stored locally: the queue exists to survive a
-failed ingest and to answer "what did I just say" while extraction catches up,
-not as a mirror of your memories. Rows that never made it are kept as `failed`,
-because that is the one thing worth reporting through `getPendingStatus`.
-
-## Local development
-
-The [`example/`](./example) app links this package with `file:..`, so two
-copies of `convex` resolve during local dev and the two `ComponentDefinition`
-types end up structurally identical but nominally distinct. The example's
-`convex.config.ts` casts around it with a comment. It is a link-only artifact:
-apps that install `@everos-ai/convex` from npm resolve a single `convex` and need
-no cast. Everything else type-checks strictly, in the example and in the
-component package (`npm run build`, `npm test`).
+Design notes, how the ingestion pipeline works, and local development setup
+are in [CONTRIBUTING.md](./CONTRIBUTING.md). Changes go through pull requests;
+CI (build, tests, secret scan) must pass before merging.
 
 ---
 

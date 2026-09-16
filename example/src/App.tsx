@@ -58,11 +58,72 @@ export default function App() {
   return (
     <div className="app">
       <TopBar ticketNo={conversation.ticketNo} />
+      <IntroCard escalated={conversation.tier2ThreadId !== null} />
       <div className="layout">
         <ConversationPanel conversation={conversation} />
         <ConsolePanel conversation={conversation} />
       </div>
     </div>
+  );
+}
+
+// What a first-time visitor needs before the two panels make sense: who they
+// are in this scene, what to click, and what to look for. Kept on screen
+// rather than dismissed, because the payoff is on step 3.
+function IntroCard({ escalated }: { escalated: boolean }) {
+  const resetCustomer = useAction(api.demo.resetCustomer);
+  const [resetting, setResetting] = useState(false);
+
+  async function onStartOver() {
+    if (resetting) return;
+    setResetting(true);
+    try {
+      await resetCustomer({ customerId: CUSTOMER_ID });
+    } finally {
+      // A new browser-local id means a brand-new customer on reload.
+      localStorage.removeItem("lumon-demo-customer-id");
+      location.reload();
+    }
+  }
+
+  return (
+    <section className="intro">
+      <div className="intro-text">
+        <p className="intro-lead">
+          <strong>This is a live demo of long-term agent memory.</strong> You
+          are <strong>{CUSTOMER_NAME}</strong>, a returning customer of a SaaS
+          called Lumon. Mindy, the support agent, already remembers you from
+          past sessions through{" "}
+          <a href="https://github.com/EverMind-AI/EverOS-Convex">
+            @everos-ai/convex
+          </a>
+          .
+        </p>
+        <ol className="intro-steps">
+          <li>
+            Ask about a problem, for example{" "}
+            <em>“Our webhooks started failing again this morning.”</em>
+          </li>
+          <li>
+            Click <strong>Escalate to specialist</strong>.
+          </li>
+          <li className={escalated ? "intro-step-done" : undefined}>
+            The specialist runs on a <strong>different model</strong> in a{" "}
+            <strong>brand-new thread</strong> with no chat history, yet greets
+            you by name and knows your plan and issue. The right-hand panel
+            shows exactly which memories it used.
+          </li>
+        </ol>
+      </div>
+      <button
+        className="btn btn-secondary intro-reset"
+        onClick={onStartOver}
+        disabled={resetting}
+        title="Delete this browser's customer and its memories, then start fresh"
+      >
+        {resetting ? "Resetting…" : "Start over"}
+      </button>
+    </section>
   );
 }
 
@@ -225,7 +286,7 @@ function ConversationPanel({ conversation }: { conversation: Conversation }) {
       <form className="composer" onSubmit={onSend}>
         <input
           value={input}
-          placeholder="Reply as the customer…"
+          placeholder="Reply as the customer… try: Our webhooks started failing again this morning."
           onChange={(e) => setInput(e.target.value)}
         />
         <button className="btn btn-primary" type="submit" disabled={pending}>

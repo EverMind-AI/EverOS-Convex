@@ -5,8 +5,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 Long-term memory for [Convex](https://convex.dev) apps, backed by
-[EverOS Cloud](https://evermind.ai) — the open-source agent memory OS
-(state of the art on LoCoMo).
+[EverOS Cloud](https://evermind.ai/everos), the hosted service of
+[EverOS](https://github.com/EverMind-AI/EverOS) — the open-source agent memory
+OS (state of the art on LoCoMo).
 
 Drop-in `remember` / `recall` / user memory profiles for any Convex app, plus
 **one-line long-term memory for [`@convex-dev/agent`](https://docs.convex.dev/agents)**:
@@ -49,8 +50,9 @@ export default app;
 
 ### 2. Set your EverOS API key
 
-Get a free key at **[evermind.ai](https://evermind.ai)** (free tier; API docs at
-[docs.evermind.ai](https://docs.evermind.ai)), then:
+Get a free key at **[everos.evermind.ai](https://everos.evermind.ai/)** (free
+tier; API reference at
+[docs.evermind.ai](https://docs.evermind.ai/api-reference/introduction)), then:
 
 ```bash
 npx convex env set EVEROS_API_KEY <your-key>

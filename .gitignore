@@ -5,5 +5,5 @@ dist
 .env.local
 .convex
 example/.env.local
-.claude/settings.local.json
+.claude/
 .DS_Store

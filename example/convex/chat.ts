@@ -205,6 +205,15 @@ export const seedReturningCustomer = action({
   args: { customerId: v.string(), conversationId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // Idempotent: the UI calls this once, but the action is public, so a
+    // caller replaying it would otherwise write five memories per call into
+    // the demo namespace. Seeding a conversation that is already seeded (or
+    // does not exist) does nothing.
+    const conv: Doc<"conversations"> | null = await ctx.runQuery(
+      internal.chat.getConvInternal,
+      { conversationId: args.conversationId as Id<"conversations"> },
+    );
+    if (!conv || conv.seeded) return null;
     for (const fact of PRIOR_SESSION_FACTS) {
       await everos.remember(ctx, {
         userId: args.customerId,

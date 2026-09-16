@@ -502,7 +502,7 @@ export const sendMessage = action({
           ]
         : [];
 
-    const result = await def.agent.generateText(
+    let result = await def.agent.generateText(
       ctx,
       { threadId, userId: args.customerId },
       {
@@ -511,6 +511,29 @@ export const sendMessage = action({
         tools: { searchMemory: everos.asTool({ userId: args.customerId }) },
       },
     );
+    if (result.text.trim() === "") {
+      // The hosted model occasionally returns an empty completion (no text,
+      // no tool call, no error). One retry clears it; the prompt is already
+      // saved on the thread, so only the reply is persisted this time.
+      result = await def.agent.generateText(
+        ctx,
+        { threadId, userId: args.customerId },
+        {
+          messages: contextMsgs,
+          prompt: args.prompt,
+          tools: { searchMemory: everos.asTool({ userId: args.customerId }) },
+        },
+        { storageOptions: { saveMessages: "none" } },
+      );
+      if (result.text.trim() !== "") {
+        await def.agent.saveMessages(ctx, {
+          threadId,
+          userId: args.customerId,
+          messages: [{ role: "assistant", content: result.text }],
+          skipEmbeddings: true,
+        });
+      }
+    }
 
     // 4. Remember both halves of the turn for future sessions/agents.
     // Storing only the prompt loses the answers and the commitments, which is
@@ -601,34 +624,40 @@ export const escalate = action({
     });
     // Takeover greeting. Passed via `messages` only (not `prompt`), so no fake
     // customer message is persisted to the thread.
-    const result = await AGENTS.tier2.agent.generateText(
-      ctx,
-      { threadId, userId: args.customerId },
+    const handoffMessages = [
       {
-        messages: [
-          {
-            role: "system" as const,
-            content:
-              "Long-term memory about this customer (EverOS):\n" +
-              recalled.map((m) => `- ${m.text}`).join("\n"),
-          },
-          {
-            role: "user" as const,
-            content:
-              "[internal handoff note — not from the customer] You are taking " +
-              "over this escalated conversation. Greet the customer by name, " +
-              "show in one or two sentences that you're already up to speed " +
-              "(their plan, setup, and current issue), and ask one targeted " +
-              "question to move the issue forward. Do not ask them to repeat " +
-              "anything.",
-          },
-        ],
-        tools: { searchMemory: everos.asTool({ userId: args.customerId }) },
+        role: "system" as const,
+        content:
+          "Long-term memory about this customer (EverOS):\n" +
+          recalled.map((m) => `- ${m.text}`).join("\n"),
       },
-      // Don't persist the internal handoff instruction into the thread —
-      // we save only the greeting below. (storageOptions is the 4th arg.)
-      { storageOptions: { saveMessages: "none" } },
-    );
+      {
+        role: "user" as const,
+        content:
+          "[internal handoff note — not from the customer] You are taking " +
+          "over this escalated conversation. Greet the customer by name, " +
+          "show in one or two sentences that you're already up to speed " +
+          "(their plan, setup, and current issue), and ask one targeted " +
+          "question to move the issue forward. Do not ask them to repeat " +
+          "anything.",
+      },
+    ];
+    const generateGreeting = () =>
+      AGENTS.tier2.agent.generateText(
+        ctx,
+        { threadId, userId: args.customerId },
+        {
+          messages: handoffMessages,
+          tools: { searchMemory: everos.asTool({ userId: args.customerId }) },
+        },
+        // Don't persist the internal handoff instruction into the thread —
+        // we save only the greeting below. (storageOptions is the 4th arg.)
+        { storageOptions: { saveMessages: "none" } },
+      );
+    let result = await generateGreeting();
+    // The hosted model occasionally returns an empty completion; retry once
+    // rather than open the specialist's thread with a blank greeting.
+    if (result.text.trim() === "") result = await generateGreeting();
 
     // Persist just the specialist's greeting as the thread's first message.
     await AGENTS.tier2.agent.saveMessages(ctx, {

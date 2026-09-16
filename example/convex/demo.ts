@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import {
+  action,
   internalAction,
   internalMutation,
   internalQuery,
@@ -104,5 +105,28 @@ export const clearAll = internalAction({
       conversationsDeleted: threadIds.length,
       customersCleared: customerIds.length,
     };
+  },
+});
+
+// Public on purpose, unlike clearAll: it resets exactly one customer, and a
+// customer id is a random UUID minted in the visitor's own browser, so the
+// only memories a caller can wipe are ones they could already see. The
+// "Start over" button in the UI calls this before minting a new id.
+export const resetCustomer = action({
+  args: { customerId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { threadIds }: { threadIds: string[]; customerIds: string[] } =
+      await ctx.runQuery(internal.demo.listTargets, {
+        customerId: args.customerId,
+      });
+    for (const threadId of threadIds) {
+      await anyAgent.deleteThreadSync(ctx, { threadId });
+    }
+    await ctx.runMutation(internal.demo.wipeAppRows, {
+      customerId: args.customerId,
+    });
+    await everos.forgetUser(ctx, { userId: args.customerId });
+    return null;
   },
 });

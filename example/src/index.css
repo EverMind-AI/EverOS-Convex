@@ -586,3 +586,57 @@ code {
   color: var(--amber);
   background: var(--amber-bg);
 }
+
+/* First-visit guidance above the two panels. */
+.intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0.9rem auto 0;
+  padding: 0.8rem 1rem;
+  box-sizing: border-box;
+}
+
+.intro-text {
+  background: var(--violet-bg);
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius);
+  padding: 0.7rem 0.9rem;
+  color: var(--text-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.intro-lead {
+  margin: 0 0 0.4rem;
+  color: var(--text);
+}
+
+.intro-lead a {
+  color: var(--violet);
+}
+
+.intro-steps {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.intro-step-done {
+  color: var(--green);
+}
+
+.intro-reset {
+  flex: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .intro {
+    flex-direction: column;
+  }
+}
